@@ -1,0 +1,20 @@
+POINTAGE PRO QR v3 - PostgreSQL
+
+Fonctions:
+- QR dynamique ~60 secondes
+- Code + PIN employé
+- Entrée / début pause / fin pause / sortie
+- Contrôle de l'ordre des actions
+- Base PostgreSQL persistante
+- Historique patron
+- Rapport mensuel
+- Export CSV
+
+Déploiement Render:
+1. Envoyer tout ce dossier dans un dépôt GitHub.
+2. Render > New > Blueprint.
+3. Connecter le dépôt.
+4. Render lit render.yaml et crée le service + PostgreSQL.
+5. Ouvrir l'adresse HTTPS fournie.
+6. Première ouverture: créer le PIN patron.
+7. Ajouter les employés.
