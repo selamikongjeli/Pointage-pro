@@ -30,4 +30,12 @@ app.post('/api/punch',async(req,res)=>{if(!valid(req.body.token))return res.stat
 app.get('/api/history',auth,async(req,res)=>res.json((await pool.query("select p.type,p.time,s.name as staff_name,s.code from punches p join staff s on s.id=p.staff_id order by p.time desc limit 1000")).rows));
 app.get('/api/report',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.id,s.name,s.code,p.type,p.time from staff s left join punches p on p.staff_id=s.id and p.time >= $1::date and p.time < ($1::date + interval '1 month') where s.active=true order by s.name,p.time",[st])).rows,by={};for(let r of rows){by[r.id]??={name:r.name,code:r.code,e:[]};if(r.type)by[r.id].e.push(r)}let employees=Object.values(by).map(x=>{let work=0,pause=0,inn=null,ps=null;for(let e of x.e){let t=new Date(e.time);if(e.type==='in')inn=t;else if(e.type==='pause_start')ps=t;else if(e.type==='pause_end'&&ps){pause+=t-ps;ps=null}else if(e.type==='out'&&inn){work+=t-inn;inn=null}}return{name:x.name,code:x.code,hours:+Math.max(0,(work-pause)/3600000).toFixed(2),events:x.e.length}});res.json({month:m,employees})});
 app.get('/api/export.csv',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.name,s.code,p.type,p.time from punches p join staff s on s.id=p.staff_id where p.time >= $1::date and p.time < ($1::date + interval '1 month') order by s.name,p.time",[st])).rows,L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'},lines=['Employé;Code;Action;Date/heure'];for(let r of rows)lines.push([r.name,r.code,L[r.type],new Date(r.time).toLocaleString('fr-BE')].map(v=>`"${String(v).replaceAll('"','""')}"`).join(';'));res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="pointage-${m}.csv"`);res.send('\ufeff'+lines.join('\n'))});
-init().then(()=>app.listen(PORT,()=>console.log('Pointage Pro v3 prêt'))).catch(e=>{console.error(e);process.exit(1)});
+async function resetAdminPin(){
+  const p=mk('1234');
+  await pool.query(
+    'UPDATE settings SET admin_pin_salt=$1, admin_pin_hash=$2 WHERE id=1',
+    [p.salt,p.hash]
+  );
+  console.log('PIN patron réinitialisé à 1234');
+}
+
