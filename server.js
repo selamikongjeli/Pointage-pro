@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS staff(id uuid primary key,name text not null,code tex
 CREATE TABLE IF NOT EXISTS punches(id uuid primary key,staff_id uuid not null references staff(id) on delete cascade,type text not null,time timestamptz not null default now());
 CREATE INDEX IF NOT EXISTS idx_punch ON punches(staff_id,time);`)}
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
-async function auth(req,res,next){let r=await settings();if(!r.admin_pin_hash)return res.status(428).json({error:'ADMIN_NOT_SETUP'});if(!ok(req.headers['x-admin-pin']||'',r))return res.status(401).json({error:'BAD_ADMIN_PIN'});next()}
+async function auth(req,res,next){let r=await settings();if(!r.admin_pin_hash)return res.status(428).json({error:'ADMIN_NOT_SETUP'});if(!r.admin_pin_salt || hp(req.headers['x-admin-pin']||'',r.admin_pin_salt)!==r.admin_pin_hash)return res.status(401).json({error:'BAD_ADMIN_PIN'});next()}
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
