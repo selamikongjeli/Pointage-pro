@@ -6,7 +6,47 @@ body{font-family:Arial;margin:0;background:#f4f6f8;color:#172033}header{backgrou
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script><script>
 let admin='',sp='',act='',sc=null,t=null;function mode(x){e.classList.toggle('hide',x!=='e');a.classList.toggle('hide',x!=='a')}async function api(u,o={}){let r=await fetch(u,o),j=await r.json().catch(()=>({}));if(!r.ok)throw j;return j}
 async function init(){month.value=new Date().toISOString().slice(0,7);let s=await api('/api/status');if(!s.adminSetup){setup.classList.remove('hide');alogin.classList.add('hide')}}async function setupAdmin(){await api('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company:company.value,pin:setupPin.value})});location.reload()}
-async function adminEnter(){try{await api('/api/staff',{headers:{'x-admin-pin':apin.value}});admin=apin.value;alogin.classList.add('hide');aa.classList.remove('hide');refreshQR();loadStaff();history();report()}catch{alert('PIN patron incorrect')}}async function refreshQR(){let j=await api('/api/qr',{headers:{'x-admin-pin':admin}});QRCode.toDataURL(j.token,{width:320,margin:1},(_,u)=>qrimg.src=u);let n=j.expiresIn;clearInterval(t);count.textContent=n;t=setInterval(()=>{count.textContent=--n;if(n<=0)refreshQR()},1000)}
+async function adminEnter(){try{await api('/api/staff',{headers:{'x-admin-pin':apin.value}});admin=apin.value;alogin.classList.add('hide');aa.classList.remove('hide');refreshQR();loadStaff();history();report()}catch{alert('PIN patron incorrect')}}async function refreshQR(){
+  try {
+    let j = await api('/api/qr', {
+      headers: {'x-admin-pin': admin}
+    });
+
+    console.log('Réponse QR:', j);
+
+    if (!j || !j.token) {
+      alert('Erreur : aucun QR reçu du serveur');
+      return;
+    }
+
+    QRCode.toDataURL(
+      j.token,
+      {width:320, margin:1},
+      (err, u) => {
+        if (err) {
+          console.error(err);
+          alert('Erreur création QR');
+          return;
+        }
+        qrimg.src = u;
+      }
+    );
+
+    let n = j.expiresIn || 60;
+
+    clearInterval(t);
+    count.textContent = n;
+
+    t = setInterval(() => {
+      count.textContent = --n;
+      if (n <= 0) refreshQR();
+    }, 1000);
+
+  } catch(e) {
+    console.error('Erreur QR:', e);
+    alert('Erreur QR : ' + e.message);
+  }
+}
 async function addStaff(){try{await api('/api/staff',{method:'POST',headers:{'Content-Type':'application/json','x-admin-pin':admin},body:JSON.stringify({name:sname.value,code:scode.value,pin:spin.value,role:srole.value})});sname.value=scode.value=spin.value='';loadStaff()}catch(x){alert(x.error==='CODE_EXISTS'?'Code déjà utilisé':'Erreur')}}async function loadStaff(){let x=await api('/api/staff',{headers:{'x-admin-pin':admin}});staff.innerHTML=x.map(v=>`<div class="item"><b>${v.name}</b> — ${v.role}<br>Code ${v.code}</div>`).join('')}
 async function history(){let x=await api('/api/history',{headers:{'x-admin-pin':admin}}),L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'};hist.innerHTML=x.slice(0,100).map(v=>`<div class="item"><b>${v.staff_name}</b> — ${L[v.type]}<br>${new Date(v.time).toLocaleString('fr-BE')}</div>`).join('')}async function report(){let j=await api('/api/report?month='+month.value,{headers:{'x-admin-pin':admin}});rep.innerHTML='<table><tr><th>Employé</th><th>Heures</th><th>Pointages</th></tr>'+j.employees.map(v=>`<tr><td>${v.name}</td><td>${v.hours.toFixed(2)} h</td><td>${v.events}</td></tr>`).join('')+'</table>'}
 async function csv(){let r=await fetch('/api/export.csv?month='+month.value,{headers:{'x-admin-pin':admin}}),b=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='pointage-'+month.value+'.csv';a.click()}async function elogin(){try{let j=await api('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:ecode.value,pin:epin.value})});sp=epin.value;ename.textContent='Bonjour '+j.staff.name;ea.classList.remove('hide')}catch{alert('Code ou PIN incorrect')}}function choose(x){act=x;let L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'};chosen.textContent='Action : '+L[x];scan.classList.remove('hide')}
