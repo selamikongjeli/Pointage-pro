@@ -10,12 +10,76 @@ const ok=(p,r)=>!!(r && r.pin_salt && r.pin_hash) && hp(p,r.pin_salt)===r.pin_ha
 const sig=p=>crypto.createHmac('sha256',SECRET).update(p).digest('hex');
 const token=()=>{let p=String(Math.floor(Date.now()/60000));return p+'.'+sig(p)};
 function valid(t){try{let [p,s]=String(t||'').split('.');for(let o of [0,-1,1]){let q=String(Math.floor(Date.now()/60000)+o),a=Buffer.from(s||''),b=Buffer.from(sig(q));if(p===q&&a.length===b.length&&crypto.timingSafeEqual(a,b))return true}}catch{}return false}
-async function init(){await pool.query(`
-CREATE TABLE IF NOT EXISTS settings(id int primary key,company text not null default 'Mon entreprise',admin_pin_salt text,admin_pin_hash text);
-INSERT INTO settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
-CREATE TABLE IF NOT EXISTS staff(id uuid primary key,name text not null,code text unique not null,role text not null default 'Employé',active boolean not null default true,pin_salt text not null,pin_hash text not null);
-CREATE TABLE IF NOT EXISTS punches(id uuid primary key,staff_id uuid not null references staff(id) on delete cascade,type text not null,time timestamptz not null default now());
-CREATE INDEX IF NOT EXISTS idx_punch ON punches(staff_id,time);`)}
+async function init(){
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings(
+      id int primary key,
+      company text not null default 'Mon entreprise',
+      admin_pin_salt text,
+      admin_pin_hash text
+    );
+
+    INSERT INTO settings(id)
+    VALUES(1)
+    ON CONFLICT(id) DO NOTHING;
+
+    CREATE TABLE IF NOT EXISTS establishments(
+      id uuid primary key,
+      name text not null,
+      address text,
+      latitude double precision,
+      longitude double precision,
+      radius_m integer not null default 100,
+      active boolean not null default true,
+      created_at timestamptz not null default now()
+    );
+
+    CREATE TABLE IF NOT EXISTS managers(
+      id uuid primary key,
+      establishment_id uuid not null references establishments(id) on delete cascade,
+      name text not null,
+      username text unique not null,
+      pin_salt text not null,
+      pin_hash text not null,
+      active boolean not null default true,
+      created_at timestamptz not null default now()
+    );
+
+    CREATE TABLE IF NOT EXISTS staff(
+      id uuid primary key,
+      name text not null,
+      code text unique not null,
+      role text not null default 'Employé',
+      active boolean not null default true,
+      pin_salt text,
+      pin_hash text
+    );
+
+    ALTER TABLE staff
+    ADD COLUMN IF NOT EXISTS establishment_id uuid
+    REFERENCES establishments(id) ON DELETE SET NULL;
+
+    CREATE TABLE IF NOT EXISTS punches(
+      id uuid primary key,
+      staff_id uuid not null references staff(id) on delete cascade,
+      type text not null,
+      time timestamptz not null default now()
+    );
+
+    ALTER TABLE punches
+    ADD COLUMN IF NOT EXISTS establishment_id uuid
+    REFERENCES establishments(id) ON DELETE SET NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_punch
+    ON punches(staff_id,time);
+
+    CREATE INDEX IF NOT EXISTS idx_staff_establishment
+    ON staff(establishment_id);
+
+    CREATE INDEX IF NOT EXISTS idx_punch_establishment
+    ON punches(establishment_id,time);
+  `);
+}
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
 async function auth(req,res,next){let r=await settings();if(!r.admin_pin_hash)return res.status(428).json({error:'ADMIN_NOT_SETUP'});if(!r.admin_pin_salt || hp(req.headers['x-admin-pin']||'',r.admin_pin_salt)!==r.admin_pin_hash)return res.status(401).json({error:'BAD_ADMIN_PIN'});next()}
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
