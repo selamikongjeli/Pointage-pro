@@ -28,9 +28,10 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <body>
 <header>⏱ POINTAGE PRO QR v3</header>
 <div class="w">
-<div class="grid">
+<div class="grid" style="grid-template-columns:repeat(3,1fr)">
 <button onclick="mode('e')">👤 Employé</button>
-<button class="x" onclick="mode('a')">🔐 Patron</button>
+<button class="o" onclick="mode('m')">👔 Responsable</button>
+<button class="x" onclick="mode('a')">🔐 Super Admin</button>
 </div><br>
 
 <section id="e">
@@ -56,7 +57,36 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <div id="result"></div>
 </div>
 </section>
+<section id="m" class="hide">
 
+<div id="mlogin" class="card">
+  <h2>👔 Connexion responsable</h2>
+
+  <input id="muser" placeholder="Identifiant responsable">
+  <input id="mpin" type="password" placeholder="PIN">
+
+  <button onclick="managerEnter()">Connexion</button>
+</div>
+
+<div id="ma" class="hide">
+
+  <div class="card">
+    <h2 id="mEstName">Établissement</h2>
+    <p id="mWelcome"></p>
+
+    <button class="x" onclick="managerLogout()">
+      Déconnexion
+    </button>
+  </div>
+
+  <div class="card">
+    <h3>👥 Gestion des employés</h3>
+    <p>Gestion des employés de cet établissement.</p>
+  </div>
+
+</div>
+
+</section>
 <section id="a" class="hide">
 <div id="setup" class="card hide">
 <h2>Première configuration</h2>
@@ -126,11 +156,48 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 </div>
 
 <script>
-let admin='',sp='',act='',sc=null,t=null;
+let admin='',managerToken='',sp='',act='',sc=null,t=null;
 
 function mode(x){
   document.getElementById('e').classList.toggle('hide',x!=='e');
+  document.getElementById('m').classList.toggle('hide',x!=='m');
   document.getElementById('a').classList.toggle('hide',x!=='a');
+}
+  async function managerEnter(){
+  try{
+    const j=await api('/api/manager/login',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json'
+      },
+      body:JSON.stringify({
+        username:document.getElementById('muser').value,
+        pin:document.getElementById('mpin').value
+      })
+    });
+
+    managerToken=j.token;
+
+    document.getElementById('mlogin').classList.add('hide');
+    document.getElementById('ma').classList.remove('hide');
+
+    document.getElementById('mEstName').textContent=
+      '🏢 '+j.manager.establishment_name;
+
+    document.getElementById('mWelcome').textContent=
+      'Bonjour '+j.manager.name;
+
+ }catch(e){
+  console.error(e);
+  alert('Identifiant ou PIN responsable incorrect');
+}
+}
+
+function managerLogout(){
+  managerToken='';
+  document.getElementById('mpin').value='';
+  document.getElementById('ma').classList.add('hide');
+  document.getElementById('mlogin').classList.remove('hide');
 }
 async function api(u,o={}){
   let r=await fetch(u,o),j=await r.json().catch(()=>({}));
