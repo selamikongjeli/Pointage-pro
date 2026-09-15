@@ -38,4 +38,7 @@ async function resetAdminPin(){
   );
   console.log('PIN patron réinitialisé à 1234');
 }
-
+init()
+  .then(resetAdminPin)
+  .then(()=>app.listen(PORT,()=>console.log('Pointage Pro v3 prêt')))
+  .catch(e=>{console.error(e);process.exit(1)});
