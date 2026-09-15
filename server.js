@@ -336,6 +336,133 @@ app.get('/api/manager/me',managerAuth,(req,res)=>{
     manager:req.manager
   });
 });
+// ===== EMPLOYES DU RESPONSABLE =====
+
+app.get('/api/manager/staff',managerAuth,async(req,res)=>{
+  const q=await pool.query(`
+    SELECT id,name,code,role,active
+    FROM staff
+    WHERE establishment_id=$1
+    ORDER BY name
+  `,[req.manager.establishment_id]);
+
+  res.json(q.rows);
+});
+
+app.post('/api/manager/staff',managerAuth,async(req,res)=>{
+  const name=String(req.body.name||'').trim();
+  const code=String(req.body.code||'').trim();
+  const role=String(req.body.role||'Employé').trim();
+  const pin=String(req.body.pin||'');
+
+  if(!name || !code || pin.length<4){
+    return res.status(400).json({error:'INVALID'});
+  }
+
+  const p=mk(pin);
+
+  try{
+    await pool.query(`
+      INSERT INTO staff
+        (id,name,code,role,pin_salt,pin_hash,establishment_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7)
+    `,[
+      crypto.randomUUID(),
+      name,
+      code,
+      role,
+      p.salt,
+      p.hash,
+      req.manager.establishment_id
+    ]);
+
+    res.json({ok:true});
+
+  }catch(e){
+    if(e.code==='23505'){
+      return res.status(409).json({error:'CODE_EXISTS'});
+    }
+
+    console.error(e);
+    res.status(500).json({error:'SERVER_ERROR'});
+  }
+});
+
+app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
+  const id=req.params.id;
+  const name=String(req.body.name||'').trim();
+  const code=String(req.body.code||'').trim();
+  const role=String(req.body.role||'Employé').trim();
+  const pin=String(req.body.pin||'');
+
+  if(!name || !code){
+    return res.status(400).json({error:'INVALID'});
+  }
+
+  try{
+    if(pin){
+      if(pin.length<4){
+        return res.status(400).json({error:'PIN'});
+      }
+
+      const p=mk(pin);
+
+      const q=await pool.query(`
+        UPDATE staff
+        SET name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5
+        WHERE id=$6 AND establishment_id=$7
+        RETURNING id
+      `,[
+        name,code,role,p.salt,p.hash,
+        id,req.manager.establishment_id
+      ]);
+
+      if(!q.rows[0]){
+        return res.status(404).json({error:'NOT_FOUND'});
+      }
+
+    }else{
+
+      const q=await pool.query(`
+        UPDATE staff
+        SET name=$1,code=$2,role=$3
+        WHERE id=$4 AND establishment_id=$5
+        RETURNING id
+      `,[
+        name,code,role,
+        id,req.manager.establishment_id
+      ]);
+
+      if(!q.rows[0]){
+        return res.status(404).json({error:'NOT_FOUND'});
+      }
+    }
+
+    res.json({ok:true});
+
+  }catch(e){
+    if(e.code==='23505'){
+      return res.status(409).json({error:'CODE_EXISTS'});
+    }
+
+    console.error(e);
+    res.status(500).json({error:'SERVER_ERROR'});
+  }
+});
+
+app.delete('/api/manager/staff/:id',managerAuth,async(req,res)=>{
+  const q=await pool.query(`
+    DELETE FROM staff
+    WHERE id=$1 AND establishment_id=$2
+    RETURNING id
+  `,[req.params.id,req.manager.establishment_id]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({error:'NOT_FOUND'});
+  }
+
+  res.json({ok:true});
+});
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
 app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.floor(Date.now()/1000)%60)}));
