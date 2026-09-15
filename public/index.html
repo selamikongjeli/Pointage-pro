@@ -264,12 +264,56 @@ function startScan(){
 }
 async function submit(tok){
   try{
-    let j=await api('/api/punch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:ecode.value,pin:sp,token:tok,action:act})});
-    result.innerHTML='<div class="ok"><b>Pointage enregistré</b><br>'+new Date(j.time).toLocaleString('fr-BE')+'</div>';
+    let j = await api('/api/punch',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        code:ecode.value,
+        pin:sp,
+        token:tok,
+        action:act
+      })
+    });
+
+    const noms = {
+      in:'Entrée',
+      pause_start:'Début pause',
+      pause_end:'Fin pause',
+      out:'Sortie'
+    };
+
+    result.innerHTML =
+      '<div class="ok">✅ ' + noms[act] +
+      ' enregistré<br><b>' +
+      new Date(j.time).toLocaleString('fr-BE') +
+      '</b></div>';
+
     stop();
+
+    setTimeout(()=>{
+      result.innerHTML='';
+    },5000);
+
   }catch(x){
-    result.innerHTML='<div class="err">'+(x.error==='QR_EXPIRED'?'QR expiré':x.error==='INVALID_SEQUENCE'?'Action impossible dans cet ordre':'Pointage refusé')+'</div>';
+
+    let message='Pointage impossible';
+
+    if(x.error==='QR_EXPIRED')
+      message='QR expiré. Scannez le nouveau QR.';
+
+    if(x.error==='INVALID_SEQUENCE')
+      message='Action impossible dans cet ordre.';
+
+    if(x.error==='BAD_LOGIN')
+      message='Code ou PIN incorrect.';
+
+    result.innerHTML='<div class="err">⚠️ '+message+'</div>';
+
     stop();
+
+    setTimeout(()=>{
+      result.innerHTML='';
+    },5000);
   }
 }
 function stop(){
