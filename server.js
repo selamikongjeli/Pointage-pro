@@ -189,6 +189,153 @@ app.post('/api/admin/establishments/:id/manager', auth, async(req,res)=>{
     res.status(500).json({error:'SERVER_ERROR'});
   }
 });
+// ===== CONNEXION RESPONSABLE =====
+
+function makeManagerToken(m){
+  const payload=Buffer.from(JSON.stringify({
+    mid:m.id,
+    eid:m.establishment_id,
+    exp:Date.now()+(12*60*60*1000)
+  })).toString('base64url');
+
+  const signature=crypto
+    .createHmac('sha256',SECRET)
+    .update('manager:'+payload)
+    .digest('hex');
+
+  return payload+'.'+signature;
+}
+
+function readManagerToken(token){
+  try{
+    const parts=String(token||'').split('.');
+    if(parts.length!==2) return null;
+
+    const payload=parts[0];
+    const signature=parts[1];
+
+    const expected=crypto
+      .createHmac('sha256',SECRET)
+      .update('manager:'+payload)
+      .digest('hex');
+
+    if(signature.length!==expected.length) return null;
+
+    if(!crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
+    )) return null;
+
+    const data=JSON.parse(
+      Buffer.from(payload,'base64url').toString('utf8')
+    );
+
+    if(!data.mid || !data.eid || !data.exp) return null;
+    if(Date.now()>data.exp) return null;
+
+    return data;
+
+  }catch(e){
+    return null;
+  }
+}
+
+async function managerAuth(req,res,next){
+  const h=String(req.headers.authorization||'');
+
+  const token=h.startsWith('Bearer ')
+    ? h.slice(7)
+    : '';
+
+  const data=readManagerToken(token);
+
+  if(!data){
+    return res.status(401).json({
+      error:'BAD_MANAGER_TOKEN'
+    });
+  }
+
+  const q=await pool.query(`
+    SELECT
+      m.id,
+      m.name,
+      m.username,
+      m.establishment_id,
+      e.name AS establishment_name
+    FROM managers m
+    JOIN establishments e
+      ON e.id=m.establishment_id
+    WHERE
+      m.id=$1
+      AND m.establishment_id=$2
+      AND m.active=true
+      AND e.active=true
+    LIMIT 1
+  `,[data.mid,data.eid]);
+
+  if(!q.rows[0]){
+    return res.status(401).json({
+      error:'MANAGER_DISABLED'
+    });
+  }
+
+  req.manager=q.rows[0];
+  next();
+}
+
+app.post('/api/manager/login',async(req,res)=>{
+  const username=String(req.body.username||'')
+    .trim()
+    .toLowerCase();
+
+  const pin=String(req.body.pin||'');
+
+  const q=await pool.query(`
+    SELECT
+      m.id,
+      m.name,
+      m.username,
+      m.establishment_id,
+      m.pin_salt,
+      m.pin_hash,
+      e.name AS establishment_name
+    FROM managers m
+    JOIN establishments e
+      ON e.id=m.establishment_id
+    WHERE
+      LOWER(m.username)=LOWER($1)
+      AND m.active=true
+      AND e.active=true
+    LIMIT 1
+  `,[username]);
+
+  const m=q.rows[0];
+
+  if(!m || !ok(pin,m)){
+    return res.status(401).json({
+      error:'BAD_MANAGER_LOGIN'
+    });
+  }
+
+  res.json({
+    ok:true,
+    token:makeManagerToken(m),
+    manager:{
+      id:m.id,
+      name:m.name,
+      username:m.username,
+      establishment_id:m.establishment_id,
+      establishment_name:m.establishment_name
+    }
+  });
+});
+
+app.get('/api/manager/me',managerAuth,(req,res)=>{
+  res.json({
+    ok:true,
+    manager:req.manager
+  });
+});
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
 app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.floor(Date.now()/1000)%60)}));
