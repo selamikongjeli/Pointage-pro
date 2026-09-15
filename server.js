@@ -83,6 +83,112 @@ async function init(){
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
 async function auth(req,res,next){let r=await settings();if(!r.admin_pin_hash)return res.status(428).json({error:'ADMIN_NOT_SETUP'});if(!r.admin_pin_salt || hp(req.headers['x-admin-pin']||'',r.admin_pin_salt)!==r.admin_pin_hash)return res.status(401).json({error:'BAD_ADMIN_PIN'});next()}
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
+// ===== SUPER ADMIN : ETABLISSEMENTS =====
+
+app.get('/api/admin/establishments', auth, async(req,res)=>{
+  const q = await pool.query(`
+    SELECT e.*,
+      (SELECT COUNT(*) FROM staff s WHERE s.establishment_id=e.id) AS staff_count,
+      (SELECT COUNT(*) FROM managers m WHERE m.establishment_id=e.id AND m.active=true) AS manager_count
+    FROM establishments e
+    ORDER BY e.created_at DESC
+  `);
+
+  res.json(q.rows);
+});
+
+app.post('/api/admin/establishments', auth, async(req,res)=>{
+  const name = String(req.body.name || '').trim();
+  const address = String(req.body.address || '').trim();
+
+  const latitude =
+    req.body.latitude === '' || req.body.latitude == null
+      ? null
+      : Number(req.body.latitude);
+
+  const longitude =
+    req.body.longitude === '' || req.body.longitude == null
+      ? null
+      : Number(req.body.longitude);
+
+  const radius = Number(req.body.radius_m || 100);
+
+  if(!name){
+    return res.status(400).json({error:'NAME_REQUIRED'});
+  }
+
+  if(latitude !== null && !Number.isFinite(latitude)){
+    return res.status(400).json({error:'BAD_LATITUDE'});
+  }
+
+  if(longitude !== null && !Number.isFinite(longitude)){
+    return res.status(400).json({error:'BAD_LONGITUDE'});
+  }
+
+  if(!Number.isFinite(radius) || radius < 20 || radius > 2000){
+    return res.status(400).json({error:'BAD_RADIUS'});
+  }
+
+  const id = crypto.randomUUID();
+
+  const q = await pool.query(`
+    INSERT INTO establishments
+      (id,name,address,latitude,longitude,radius_m)
+    VALUES($1,$2,$3,$4,$5,$6)
+    RETURNING *
+  `,[id,name,address,latitude,longitude,radius]);
+
+  res.json(q.rows[0]);
+});
+
+
+app.post('/api/admin/establishments/:id/manager', auth, async(req,res)=>{
+  const establishmentId = req.params.id;
+  const name = String(req.body.name || '').trim();
+  const username = String(req.body.username || '').trim().toLowerCase();
+  const pin = String(req.body.pin || '');
+
+  if(!name || !username || pin.length < 4){
+    return res.status(400).json({error:'INVALID'});
+  }
+
+  const est = await pool.query(
+    'SELECT id FROM establishments WHERE id=$1 AND active=true',
+    [establishmentId]
+  );
+
+  if(!est.rows[0]){
+    return res.status(404).json({error:'ESTABLISHMENT_NOT_FOUND'});
+  }
+
+  const p = mk(pin);
+
+  try{
+    const q = await pool.query(`
+      INSERT INTO managers
+        (id,establishment_id,name,username,pin_salt,pin_hash)
+      VALUES($1,$2,$3,$4,$5,$6)
+      RETURNING id,establishment_id,name,username,active
+    `,[
+      crypto.randomUUID(),
+      establishmentId,
+      name,
+      username,
+      p.salt,
+      p.hash
+    ]);
+
+    res.json(q.rows[0]);
+
+  }catch(e){
+    if(e.code === '23505'){
+      return res.status(409).json({error:'USERNAME_ALREADY_EXISTS'});
+    }
+
+    console.error(e);
+    res.status(500).json({error:'SERVER_ERROR'});
+  }
+});
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
 app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.floor(Date.now()/1000)%60)}));
