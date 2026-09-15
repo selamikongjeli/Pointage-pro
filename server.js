@@ -101,7 +101,8 @@ async function init(){
       active boolean not null default true,
       created_at timestamptz not null default now()
     );
-
+ALTER TABLE managers
+ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 1;
     CREATE TABLE IF NOT EXISTS staff(
       id uuid primary key,
       name text not null,
@@ -250,10 +251,11 @@ app.post('/api/admin/establishments/:id/manager', auth, async(req,res)=>{
 
 function makeManagerToken(m){
   const payload=Buffer.from(JSON.stringify({
-    mid:m.id,
-    eid:m.establishment_id,
-    exp:Date.now()+(12*60*60*1000)
-  })).toString('base64url');
+  mid:m.id,
+  eid:m.establishment_id,
+  sv:m.session_version,
+  exp:Date.now()+(12*60*60*1000)
+})).toString('base64url');
 
   const signature=crypto
     .createHmac('sha256',SECRET)
@@ -287,7 +289,7 @@ function readManagerToken(token){
       Buffer.from(payload,'base64url').toString('utf8')
     );
 
-    if(!data.mid || !data.eid || !data.exp) return null;
+   if(!data.mid || !data.eid || !data.sv || !data.exp) return null;
     if(Date.now()>data.exp) return null;
 
     return data;
@@ -313,22 +315,24 @@ async function managerAuth(req,res,next){
   }
 
   const q=await pool.query(`
-    SELECT
-      m.id,
-      m.name,
-      m.username,
-      m.establishment_id,
-      e.name AS establishment_name
-    FROM managers m
-    JOIN establishments e
-      ON e.id=m.establishment_id
-    WHERE
-      m.id=$1
-      AND m.establishment_id=$2
-      AND m.active=true
-      AND e.active=true
-    LIMIT 1
-  `,[data.mid,data.eid]);
+  SELECT
+    m.id,
+    m.name,
+    m.username,
+    m.establishment_id,
+    m.session_version,
+    e.name AS establishment_name
+  FROM managers m
+  JOIN establishments e
+    ON e.id=m.establishment_id
+  WHERE
+    m.id=$1
+    AND m.establishment_id=$2
+    AND m.session_version=$3
+    AND m.active=true
+    AND e.active=true
+  LIMIT 1
+`,[data.mid,data.eid,data.sv]);
 
   if(!q.rows[0]){
     return res.status(401).json({
@@ -353,6 +357,7 @@ app.post('/api/manager/login',async(req,res)=>{
       m.name,
       m.username,
       m.establishment_id,
+      m.session_version,
       m.pin_salt,
       m.pin_hash,
       e.name AS establishment_name
@@ -400,6 +405,45 @@ app.get('/api/manager/permanent-qr',managerAuth,(req,res)=>{
     establishment_id:req.manager.establishment_id,
     establishment_name:req.manager.establishment_name,
     token:permanentQR(req.manager.establishment_id)
+  });
+});
+app.get('/api/admin/establishments/:id/managers',auth,async(req,res)=>{
+  const q=await pool.query(`
+    SELECT id,name,username,active
+    FROM managers
+    WHERE establishment_id=$1
+    ORDER BY name
+  `,[req.params.id]);
+
+  res.json(q.rows);
+});
+
+app.patch('/api/admin/managers/:id/reset-pin',auth,async(req,res)=>{
+  const pin=String(req.body.pin||'');
+
+  if(pin.length<4){
+    return res.status(400).json({error:'PIN'});
+  }
+
+  const p=mk(pin);
+
+  const q=await pool.query(`
+    UPDATE managers
+    SET
+      pin_salt=$1,
+      pin_hash=$2,
+      session_version=session_version+1
+    WHERE id=$3
+    RETURNING id,name,username
+  `,[p.salt,p.hash,req.params.id]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({error:'NOT_FOUND'});
+  }
+
+  res.json({
+    ok:true,
+    manager:q.rows[0]
   });
 });
 // ===== EMPLOYES DU RESPONSABLE =====
