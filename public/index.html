@@ -69,7 +69,35 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <input id="apin" type="password" placeholder="PIN patron">
 <button onclick="adminEnter()">Connexion</button>
 </div>
-<div id="aa" class="hide">
+<div id="aa" class="hide"><div class="card">
+  <h2>🏢 Mes établissements</h2>
+
+  <button onclick="showEstablishmentForm()">+ Ajouter un établissement</button>
+
+  <div id="establishmentForm" class="hide" style="margin-top:15px">
+    <h3>Nouvel établissement</h3>
+
+    <input id="estName" placeholder="Nom de l'établissement">
+
+    <input id="estAddress" placeholder="Adresse">
+
+    <input id="estLatitude" type="number" step="any" placeholder="Latitude">
+
+    <input id="estLongitude" type="number" step="any" placeholder="Longitude">
+
+    <input id="estRadius" type="number" value="100" placeholder="Rayon autorisé en mètres">
+
+    <button class="g" onclick="createEstablishment()">
+      Créer l'établissement
+    </button>
+
+    <button class="x" onclick="hideEstablishmentForm()">
+      Annuler
+    </button>
+  </div>
+
+  <div id="establishmentsList" style="margin-top:15px"></div>
+</div>
 <div class="card qr">
 <h2>QR dynamique</h2>
 <div id="qrbox"></div>
@@ -132,9 +160,147 @@ async function adminEnter(){
     alogin.classList.add('hide');
     aa.classList.remove('hide');
     await refreshQR();
-    loadStaff();history();report();
+    await loadEstablishments();
+loadStaff();
+history();
+report();
   }catch(e){alert('PIN patron incorrect')}
 }
+function showEstablishmentForm(){
+  document.getElementById('establishmentForm').classList.remove('hide');
+}
+
+function hideEstablishmentForm(){
+  document.getElementById('establishmentForm').classList.add('hide');
+}
+
+async function createEstablishment(){
+  const name=document.getElementById('estName').value.trim();
+  const address=document.getElementById('estAddress').value.trim();
+  const latitude=document.getElementById('estLatitude').value;
+  const longitude=document.getElementById('estLongitude').value;
+  const radius_m=document.getElementById('estRadius').value || 100;
+
+  if(!name){
+    alert("Indiquez le nom de l'établissement");
+    return;
+  }
+
+  try{
+    await api('/api/admin/establishments',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-admin-pin':admin
+      },
+      body:JSON.stringify({
+        name,
+        address,
+        latitude,
+        longitude,
+        radius_m
+      })
+    });
+
+    document.getElementById('estName').value='';
+    document.getElementById('estAddress').value='';
+    document.getElementById('estLatitude').value='';
+    document.getElementById('estLongitude').value='';
+    document.getElementById('estRadius').value='100';
+
+    hideEstablishmentForm();
+    await loadEstablishments();
+
+    alert('Établissement créé');
+
+  }catch(e){
+    console.error(e);
+    alert("Impossible de créer l'établissement");
+  }
+}
+
+async function loadEstablishments(){
+  try{
+    const list=await api('/api/admin/establishments',{
+      headers:{'x-admin-pin':admin}
+    });
+
+    const box=document.getElementById('establishmentsList');
+
+    if(!list.length){
+      box.innerHTML='<p>Aucun établissement créé.</p>';
+      return;
+    }
+
+    box.innerHTML=list.map(e=>`
+      <div class="item">
+        <h3>🏢 ${esc(e.name)}</h3>
+        <div>📍 ${e.address ? esc(e.address) : 'Adresse non définie'}</div>
+        <div>Rayon : <b>${Number(e.radius_m)} m</b></div>
+        <div>👥 ${Number(e.staff_count)} employé(s)</div>
+        <div>🔐 ${Number(e.manager_count)} responsable(s)</div>
+        <br>
+        <button onclick="createManager('${e.id}','${encodeURIComponent(e.name)}')">
+          👤 Créer un responsable
+        </button>
+      </div>
+    `).join('');
+
+  }catch(e){
+    console.error(e);
+    document.getElementById('establishmentsList').innerHTML=
+      '<div class="err">Impossible de charger les établissements.</div>';
+  }
+}
+
+async function createManager(establishmentId,encodedName){
+  const establishmentName=decodeURIComponent(encodedName);
+
+  const name=prompt('Nom du responsable de '+establishmentName+' :');
+  if(name===null || !name.trim()) return;
+
+  const username=prompt('Identifiant de connexion du responsable :');
+  if(username===null || !username.trim()) return;
+
+  const pin=prompt('PIN du responsable (minimum 4 caractères) :');
+  if(pin===null) return;
+
+  if(pin.length<4){
+    alert('Le PIN doit contenir minimum 4 caractères.');
+    return;
+  }
+
+  try{
+    await api('/api/admin/establishments/'+establishmentId+'/manager',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-admin-pin':admin
+      },
+      body:JSON.stringify({
+        name:name.trim(),
+        username:username.trim(),
+        pin
+      })
+    });
+
+    await loadEstablishments();
+
+    alert('Responsable créé.\nIdentifiant : '+username.trim());
+
+  }catch(e){
+    console.error(e);
+
+    if(e.error==='USERNAME_ALREADY_EXISTS'){
+      alert('Cet identifiant est déjà utilisé.');
+    }else{
+      alert('Impossible de créer le responsable.');
+    }
+  }
+}
+
+
+  
 async function refreshQR(){
   try{
     let j=await api('/api/qr',{headers:{'x-admin-pin':admin}});
