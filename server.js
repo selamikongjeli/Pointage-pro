@@ -58,7 +58,23 @@ app.delete('/api/staff/:id',auth,async(req,res)=>{
   res.json({ok:true});
 });
 app.post('/api/login',async(req,res)=>{let s=await staff(String(req.body.code||''));if(!s||!ok(req.body.pin||'',s))return res.status(401).json({error:'BAD_LOGIN'});res.json({ok:true,staff:{name:s.name,role:s.role}})});
-function next(last,a){if(!last)return a==='in';if(last.type==='out')return a==='in';if(last.type==='in')return a==='pause_start'||a==='out';if(last.type==='pause_start')return a==='pause_end';if(last.type==='pause_end')return a==='pause_start'||a==='out';return false}
+function next(last, a) {
+  if (!last) return a === 'in';
+
+  if (last.type === 'in')
+    return a === 'pause_start' || a === 'out';
+
+  if (last.type === 'pause_start')
+    return a === 'pause_end';
+
+  if (last.type === 'pause_end')
+    return a === 'pause_start' || a === 'out';
+
+  if (last.type === 'out')
+    return a === 'in';
+
+  return false;
+}
 app.post('/api/punch',async(req,res)=>{if(!valid(req.body.token))return res.status(400).json({error:'QR_EXPIRED'});let s=await staff(String(req.body.code||''));if(!s||!ok(req.body.pin||'',s))return res.status(401).json({error:'BAD_LOGIN'});let a=req.body.action;if(!['in','pause_start','pause_end','out'].includes(a))return res.status(400).json({error:'BAD_ACTION'});let last=(await pool.query('select * from punches where staff_id=$1 order by time desc limit 1',[s.id])).rows[0];if(!next(last,a))return res.status(409).json({error:'INVALID_SEQUENCE'});let q=await pool.query('insert into punches(id,staff_id,type) values($1,$2,$3) returning time',[crypto.randomUUID(),s.id,a]);res.json({ok:true,type:a,time:q.rows[0].time,name:s.name})});
 app.get('/api/history',auth,async(req,res)=>res.json((await pool.query("select p.type,p.time,s.name as staff_name,s.code from punches p join staff s on s.id=p.staff_id order by p.time desc limit 1000")).rows));
 app.get('/api/report',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.id,s.name,s.code,p.type,p.time from staff s left join punches p on p.staff_id=s.id and p.time >= $1::date and p.time < ($1::date + interval '1 month') where s.active=true order by s.name,p.time",[st])).rows,by={};for(let r of rows){by[r.id]??={name:r.name,code:r.code,e:[]};if(r.type)by[r.id].e.push(r)}let employees=Object.values(by).map(x=>{let work=0,pause=0,inn=null,ps=null;for(let e of x.e){let t=new Date(e.time);if(e.type==='in')inn=t;else if(e.type==='pause_start')ps=t;else if(e.type==='pause_end'&&ps){pause+=t-ps;ps=null}else if(e.type==='out'&&inn){work+=t-inn;inn=null}}return{name:x.name,code:x.code,hours:+Math.max(0,(work-pause)/3600000).toFixed(2),events:x.e.length}});res.json({month:m,employees})});
