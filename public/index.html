@@ -80,9 +80,31 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
   </div>
 
   <div class="card">
-    <h3>👥 Gestion des employés</h3>
-    <p>Gestion des employés de cet établissement.</p>
-  </div>
+  <h3>👥 Gestion des employés</h3>
+
+  <h4>Ajouter un employé</h4>
+
+  <input id="msname" placeholder="Nom de l'employé">
+  <input id="mscode" placeholder="Code employé">
+  <input id="mspin" type="password" placeholder="PIN (minimum 4 caractères)">
+
+  <select id="msrole">
+    <option value="Employé">Employé</option>
+    <option value="Serveur">Serveur</option>
+    <option value="Cuisine">Cuisine</option>
+    <option value="Barman">Barman</option>
+    <option value="Autre">Autre</option>
+  </select>
+
+  <button class="g" onclick="managerAddStaff()">
+    + Ajouter l'employé
+  </button>
+</div>
+
+<div class="card">
+  <h3>👥 Mes employés</h3>
+  <div id="mstaff"></div>
+</div>
 
 </div>
 
@@ -186,7 +208,7 @@ function mode(x){
 
     document.getElementById('mWelcome').textContent=
       'Bonjour '+j.manager.name;
-
+await managerLoadStaff();
  }catch(e){
   console.error(e);
   alert('Identifiant ou PIN responsable incorrect');
@@ -198,6 +220,158 @@ function managerLogout(){
   document.getElementById('mpin').value='';
   document.getElementById('ma').classList.add('hide');
   document.getElementById('mlogin').classList.remove('hide');
+}
+  async function managerAddStaff(){
+  const name=document.getElementById('msname').value.trim();
+  const code=document.getElementById('mscode').value.trim();
+  const pin=document.getElementById('mspin').value;
+  const role=document.getElementById('msrole').value;
+
+  if(!name || !code || pin.length<4){
+    alert('Nom, code et PIN minimum 4 caractères obligatoires.');
+    return;
+  }
+
+  try{
+    await api('/api/manager/staff',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer '+managerToken
+      },
+      body:JSON.stringify({
+        name,
+        code,
+        pin,
+        role
+      })
+    });
+
+    document.getElementById('msname').value='';
+    document.getElementById('mscode').value='';
+    document.getElementById('mspin').value='';
+
+    await managerLoadStaff();
+
+    alert('Employé ajouté');
+
+  }catch(e){
+    console.error(e);
+
+    if(e.error==='CODE_EXISTS'){
+      alert('Ce code employé est déjà utilisé.');
+    }else{
+      alert("Impossible d'ajouter l'employé.");
+    }
+  }
+}
+
+async function managerLoadStaff(){
+  try{
+    const list=await api('/api/manager/staff',{
+      headers:{
+        'Authorization':'Bearer '+managerToken
+      }
+    });
+
+    const box=document.getElementById('mstaff');
+
+    if(!list.length){
+      box.innerHTML='<p>Aucun employé.</p>';
+      return;
+    }
+
+    box.innerHTML=list.map(v=>`
+      <div class="item">
+        <b>${esc(v.name)}</b> — ${esc(v.role)}<br>
+        Code : ${esc(v.code)}<br><br>
+
+        <button class="x"
+          onclick='managerEditStaff(${JSON.stringify(v)})'>
+          ✏️ Modifier / PIN
+        </button>
+
+        <button class="r"
+          onclick="managerDeleteStaff('${v.id}')">
+          🗑️ Supprimer
+        </button>
+      </div>
+    `).join('');
+
+  }catch(e){
+    console.error(e);
+    document.getElementById('mstaff').innerHTML=
+      '<div class="err">Impossible de charger les employés.</div>';
+  }
+}
+
+async function managerEditStaff(v){
+  const name=prompt('Nom :',v.name);
+  if(name===null) return;
+
+  const code=prompt('Code :',v.code);
+  if(code===null) return;
+
+  const role=prompt('Rôle :',v.role);
+  if(role===null) return;
+
+  const pin=prompt(
+    "Nouveau PIN (laisser vide pour garder l'ancien) :"
+  );
+
+  if(pin===null) return;
+
+  try{
+    await api('/api/manager/staff/'+v.id,{
+      method:'PATCH',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer '+managerToken
+      },
+      body:JSON.stringify({
+        name,
+        code,
+        role,
+        pin
+      })
+    });
+
+    await managerLoadStaff();
+    alert('Employé modifié');
+
+  }catch(e){
+    console.error(e);
+
+    if(e.error==='CODE_EXISTS'){
+      alert('Ce code employé est déjà utilisé.');
+    }else if(e.error==='PIN'){
+      alert('Le PIN doit contenir minimum 4 caractères.');
+    }else{
+      alert('Modification impossible.');
+    }
+  }
+}
+
+async function managerDeleteStaff(id){
+  if(!confirm('Supprimer définitivement cet employé ?')){
+    return;
+  }
+
+  try{
+    await api('/api/manager/staff/'+id,{
+      method:'DELETE',
+      headers:{
+        'Authorization':'Bearer '+managerToken
+      }
+    });
+
+    await managerLoadStaff();
+    alert('Employé supprimé');
+
+  }catch(e){
+    console.error(e);
+    alert('Suppression impossible.');
+  }
 }
 async function api(u,o={}){
   let r=await fetch(u,o),j=await r.json().catch(()=>({}));
