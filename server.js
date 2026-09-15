@@ -6,7 +6,7 @@ const pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.N
 app.use(express.json());app.use(express.static(path.join(__dirname,'public')));
 const hp=(p,s)=>crypto.scryptSync(String(p),s,32).toString('hex');
 const mk=p=>{let s=crypto.randomBytes(16).toString('hex');return{salt:s,hash:hp(p,s)}};
-const ok=(p,r)=>r&&hp(p,r.pin_salt)===r.pin_hash;
+const ok=(p,r)=>!!(r && r.pin_salt && r.pin_hash) && hp(p,r.pin_salt)===r.pin_hash;
 const sig=p=>crypto.createHmac('sha256',SECRET).update(p).digest('hex');
 const token=()=>{let p=String(Math.floor(Date.now()/60000));return p+'.'+sig(p)};
 function valid(t){try{let [p,s]=String(t||'').split('.');for(let o of [0,-1,1]){let q=String(Math.floor(Date.now()/60000)+o),a=Buffer.from(s||''),b=Buffer.from(sig(q));if(p===q&&a.length===b.length&&crypto.timingSafeEqual(a,b))return true}}catch{}return false}
