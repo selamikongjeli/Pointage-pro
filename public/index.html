@@ -19,18 +19,24 @@ async function adminEnter(){try{await api('/api/staff',{headers:{'x-admin-pin':a
       return;
     }
 
-    QRCode.toDataURL(
-      j.token,
-      {width:320, margin:1},
-      (err, u) => {
-        if (err) {
-          console.error(err);
-          alert('Erreur création QR');
-          return;
-        }
-        qrimg.src = u;
-      }
-    );
+    const box = document.createElement('div');
+
+new QRCode(box, {
+    text: j.token,
+    width: 320,
+    height: 320
+});
+
+setTimeout(() => {
+    const img = box.querySelector('img');
+    const canvas = box.querySelector('canvas');
+
+    if (img && img.src) {
+        qrimg.src = img.src;
+    } else if (canvas) {
+        qrimg.src = canvas.toDataURL('image/png');
+    }
+}, 100);
 
     let n = j.expiresIn || 60;
 
