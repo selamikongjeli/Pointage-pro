@@ -10,6 +10,63 @@ const ok=(p,r)=>!!(r && r.pin_salt && r.pin_hash) && hp(p,r.pin_salt)===r.pin_ha
 const sig=p=>crypto.createHmac('sha256',SECRET).update(p).digest('hex');
 const token=()=>{let p=String(Math.floor(Date.now()/60000));return p+'.'+sig(p)};
 function valid(t){try{let [p,s]=String(t||'').split('.');for(let o of [0,-1,1]){let q=String(Math.floor(Date.now()/60000)+o),a=Buffer.from(s||''),b=Buffer.from(sig(q));if(p===q&&a.length===b.length&&crypto.timingSafeEqual(a,b))return true}}catch{}return false}
+// ===== QR PERMANENT PAR ETABLISSEMENT =====
+
+function permanentQR(establishmentId){
+  const payload=Buffer.from(
+    'EST:'+String(establishmentId)
+  ).toString('base64url');
+
+  const signature=sig('PERMANENT:'+payload);
+
+  return payload+'.'+signature;
+}
+
+function readPermanentQR(token){
+  try{
+    const parts=String(token||'').split('.');
+
+    if(parts.length!==2){
+      return null;
+    }
+
+    const payload=parts[0];
+    const signature=parts[1];
+
+    const expected=sig('PERMANENT:'+payload);
+
+    const a=Buffer.from(signature);
+    const b=Buffer.from(expected);
+
+    if(a.length!==b.length){
+      return null;
+    }
+
+    if(!crypto.timingSafeEqual(a,b)){
+      return null;
+    }
+
+    const text=Buffer.from(
+      payload,
+      'base64url'
+    ).toString('utf8');
+
+    if(!text.startsWith('EST:')){
+      return null;
+    }
+
+    const establishmentId=text.slice(4);
+
+    if(!establishmentId){
+      return null;
+    }
+
+    return establishmentId;
+
+  }catch(e){
+    return null;
+  }
+}
 async function init(){
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings(
@@ -334,6 +391,15 @@ app.get('/api/manager/me',managerAuth,(req,res)=>{
   res.json({
     ok:true,
     manager:req.manager
+  });
+});
+
+app.get('/api/manager/permanent-qr',managerAuth,(req,res)=>{
+  res.json({
+    ok:true,
+    establishment_id:req.manager.establishment_id,
+    establishment_name:req.manager.establishment_name,
+    token:permanentQR(req.manager.establishment_id)
   });
 });
 // ===== EMPLOYES DU RESPONSABLE =====
