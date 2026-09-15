@@ -165,7 +165,69 @@ async function addStaff(){
 }
 async function loadStaff(){
   let x=await api('/api/staff',{headers:{'x-admin-pin':admin}});
-  staff.innerHTML=x.map(v=>`<div class="item"><b>${esc(v.name)}</b> — ${esc(v.role)}<br>Code ${esc(v.code)}</div>`).join('');
+
+  staff.innerHTML=x.map(v=>`
+    <div class="item">
+      <b>${v.name}</b> — ${v.role}<br>
+      Code ${v.code}<br><br>
+
+      <button class="x" onclick='editStaff(${JSON.stringify(v)})'>
+        ✏️ Modifier / PIN
+      </button>
+
+      <button class="r" onclick="deleteStaff('${v.id}')">
+        🗑️ Supprimer
+      </button>
+    </div>
+  `).join('');
+}async function editStaff(v){
+  let name=prompt("Nom :",v.name);
+  if(name===null)return;
+
+  let code=prompt("Code :",v.code);
+  if(code===null)return;
+
+  let role=prompt("Rôle :",v.role);
+  if(role===null)return;
+
+  let pin=prompt("Nouveau PIN (laisser vide pour garder l'ancien) :");
+  if(pin===null)return;
+
+  try{
+    await api('/api/staff/'+v.id,{
+      method:'PATCH',
+      headers:{
+        'Content-Type':'application/json',
+        'x-admin-pin':admin
+      },
+      body:JSON.stringify({name,code,role,pin})
+    });
+
+    await loadStaff();
+    alert('Employé modifié');
+  }catch(x){
+    alert(x.error==='CODE_EXISTS' ? 'Code déjà utilisé' :
+          x.error==='PIN' ? 'PIN minimum 4 caractères' :
+          'Modification impossible');
+  }
+}
+
+async function deleteStaff(id){
+  if(!confirm("Voulez-vous vraiment supprimer cet employé ?"))return;
+
+  try{
+    await api('/api/staff/'+id,{
+      method:'DELETE',
+      headers:{'x-admin-pin':admin}
+    });
+
+    await loadStaff();
+    await history();
+    await report();
+    alert('Employé supprimé');
+  }catch(x){
+    alert('Suppression impossible');
+  }
 }
 async function history(){
   let x=await api('/api/history',{headers:{'x-admin-pin':admin}}),L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'};
