@@ -484,6 +484,9 @@ async function loadEstablishments(){
         <button onclick="createManager('${e.id}','${encodeURIComponent(e.name)}')">
           👤 Créer un responsable
         </button>
+        <button class="o" onclick="resetManagerPin('${e.id}')">
+  🔑 Réinitialiser PIN responsable
+</button>
       </div>
     `).join('');
 
@@ -539,7 +542,92 @@ async function createManager(establishmentId,encodedName){
     }
   }
 }
+async function resetManagerPin(establishmentId){
+  try{
+    const managers=await api(
+      '/api/admin/establishments/'+establishmentId+'/managers',
+      {
+        headers:{
+          'x-admin-pin':admin
+        }
+      }
+    );
 
+    if(!managers.length){
+      alert('Aucun responsable pour cet établissement.');
+      return;
+    }
+
+    let manager;
+
+    if(managers.length===1){
+      manager=managers[0];
+    }else{
+      const choix=prompt(
+        managers.map((m,i)=>
+          (i+1)+' - '+m.name+' ('+m.username+')'
+        ).join('\n')+
+        '\n\nNuméro du responsable :'
+      );
+
+      if(choix===null) return;
+
+      const index=Number(choix)-1;
+
+      if(!managers[index]){
+        alert('Choix incorrect.');
+        return;
+      }
+
+      manager=managers[index];
+    }
+
+    const pin=prompt(
+      'Nouveau PIN pour '+manager.name+
+      ' ('+manager.username+') :'
+    );
+
+    if(pin===null) return;
+
+    if(pin.length<4){
+      alert('Le PIN doit contenir minimum 4 caractères.');
+      return;
+    }
+
+    if(!confirm(
+      'Réinitialiser le PIN de '+manager.name+' ?\n\n'+
+      'Ses anciennes connexions seront déconnectées.'
+    )){
+      return;
+    }
+
+    await api(
+      '/api/admin/managers/'+manager.id+'/reset-pin',
+      {
+        method:'PATCH',
+        headers:{
+          'Content-Type':'application/json',
+          'x-admin-pin':admin
+        },
+        body:JSON.stringify({pin})
+      }
+    );
+
+    alert(
+      '✅ PIN réinitialisé pour '+manager.name+
+      '.\n\nIl doit maintenant se reconnecter.'
+    );
+
+  }catch(e){
+    console.error(e);
+
+    if(e.error==='PIN'){
+      alert('PIN minimum 4 caractères.');
+    }else{
+      alert('Impossible de réinitialiser le PIN.');
+    }
+  }
+}
 
   
 async function refreshQR(){
