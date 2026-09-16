@@ -470,6 +470,16 @@ app.post('/api/manager/login',async(req,res)=>{
   });
 });
 
+app.get('/api/manager/me',managerAuth,(req,res)=>{
+  res.json({
+    ok:true,
+    manager:req.manager
+  });
+});
+
+
+// ===== EMPLOYES DESACTIVES RESPONSABLE =====
+
 app.get('/api/manager/staff/inactive',managerAuth,async(req,res)=>{
 
   const q=await pool.query(`
@@ -509,10 +519,6 @@ app.patch('/api/manager/staff/:id/reactivate',managerAuth,async(req,res)=>{
     staff:q.rows[0]
   });
 });
-  res.json({
-    ok:true,
-    manager:req.manager
-  });
 
 app.get('/api/manager/permanent-qr',managerAuth,(req,res)=>{
   res.json({
