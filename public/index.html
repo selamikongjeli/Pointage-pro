@@ -1255,57 +1255,290 @@ function startScan(){
   });
 }
 async function submit(tok){
+
   try{
-    let j = await api('/api/punch',{
+
+    if(!navigator.geolocation){
+      throw {
+        error:'GPS_UNAVAILABLE'
+      };
+    }
+
+
+    result.innerHTML=
+      '<div class="ok">📍 Vérification de votre position...</div>';
+
+
+    const position=
+      await new Promise((resolve,reject)=>{
+
+        navigator.geolocation.getCurrentPosition(
+
+          resolve,
+
+          err=>{
+
+            if(err.code===1){
+              reject({
+                error:'GPS_DENIED'
+              });
+
+            }else if(err.code===2){
+              reject({
+                error:'GPS_UNAVAILABLE'
+              });
+
+            }else{
+              reject({
+                error:'GPS_TIMEOUT'
+              });
+            }
+          },
+
+          {
+            enableHighAccuracy:true,
+            timeout:15000,
+            maximumAge:0
+          }
+        );
+      });
+
+
+    const latitude=
+      position.coords.latitude;
+
+    const longitude=
+      position.coords.longitude;
+
+    const accuracy=
+      position.coords.accuracy;
+
+
+    let j=await api('/api/punch',{
+
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+
+      headers:{
+        'Content-Type':'application/json'
+      },
+
       body:JSON.stringify({
+
         code:ecode.value,
         pin:sp,
         token:tok,
-        action:act
+        action:act,
+
+        latitude,
+        longitude,
+        accuracy
+
       })
     });
 
-    const noms = {
+
+    const noms={
+
       in:'Entrée',
       pause_start:'Début pause',
       pause_end:'Fin pause',
       out:'Sortie'
+
     };
 
-    result.innerHTML =
-      '<div class="ok">✅ ' + noms[act] +
-      ' enregistré<br><b>' +
-      new Date(j.time).toLocaleString('fr-BE') +
-      '</b></div>';
+
+    result.innerHTML=
+
+      '<div class="ok">'+
+
+      '✅ '+noms[act]+' enregistré<br>'+
+
+      '<b>'+
+      new Date(j.time).toLocaleString('fr-BE')+
+      '</b><br>'+
+
+      '📍 Distance : '+
+      Number(j.distance||0)+
+      ' m'+
+
+      '</div>';
+
 
     stop();
 
+
     setTimeout(()=>{
+
       result.innerHTML='';
+
     },5000);
+
 
   }catch(x){
 
-    let message='Pointage impossible';
+    console.error(x);
 
-    if(x.error==='QR_EXPIRED')
-      message='QR expiré. Scannez le nouveau QR.';
 
-    if(x.error==='INVALID_SEQUENCE')
-      message='Action impossible dans cet ordre.';
+    let message=
+      'Pointage impossible.';
 
-    if(x.error==='BAD_LOGIN')
-      message='Code ou PIN incorrect.';
 
-    result.innerHTML='<div class="err">⚠️ '+message+'</div>';
+    if(x.error==='BAD_QR'){
+
+      message=
+        'QR invalide. Scannez le QR de votre établissement.';
+
+    }
+
+
+    if(x.error==='WRONG_ESTABLISHMENT'){
+
+      message=
+        'Ce QR appartient à un autre établissement.';
+
+    }
+
+
+    if(x.error==='GPS_DENIED'){
+
+      message=
+        'Vous devez autoriser la localisation pour pointer.';
+
+    }
+
+
+    if(x.error==='GPS_UNAVAILABLE'){
+
+      message=
+        'Position GPS indisponible. Activez votre localisation.';
+
+    }
+
+
+    if(x.error==='GPS_TIMEOUT'){
+
+      message=
+        'Impossible d’obtenir votre position. Réessayez.';
+
+    }
+
+
+    if(x.error==='GPS_REQUIRED'){
+
+      message=
+        'La localisation GPS est obligatoire.';
+
+    }
+
+
+    if(x.error==='GPS_INACCURATE'){
+
+      message=
+        'GPS trop imprécis. Essayez près d’une fenêtre ou à l’extérieur.';
+
+    }
+
+
+    if(x.error==='GPS_NOT_CONFIGURED'){
+
+      message=
+        "La position GPS de l'établissement n'est pas encore configurée.";
+
+    }
+
+
+    if(x.error==='TOO_FAR'){
+
+      message=
+        'Vous êtes trop loin de l’établissement. '+
+        'Distance : '+
+        Number(x.distance||0)+
+        ' m. Rayon autorisé : '+
+        Number(x.radius||30)+
+        ' m.';
+
+    }
+
+
+    if(x.error==='ESTABLISHMENT_CLOSED'){
+
+      message=
+        'Pointage impossible : établissement fermé.';
+
+    }
+
+
+    if(x.error==='DAY_LIMIT'){
+
+      message=
+        'Limite journalière de 11 heures atteinte.';
+
+    }
+
+
+    if(x.error==='WEEK_LIMIT'){
+
+      message=
+        'Limite de 50 heures pour cette semaine atteinte.';
+
+    }
+
+
+    if(x.error==='INVALID_SEQUENCE'){
+
+      message=
+        'Action impossible dans cet ordre.';
+
+    }
+
+
+    if(x.error==='BAD_LOGIN'){
+
+      message=
+        'Code ou PIN incorrect.';
+
+    }
+
+
+    if(x.error==='AUTO_CLOSED'){
+
+      if(x.reason==='MAX_JOUR'){
+
+        message=
+          'Votre journée a été clôturée automatiquement après la limite de 11 heures.';
+
+      }else if(x.reason==='MAX_SEMAINE'){
+
+        message=
+          'Votre semaine a été clôturée automatiquement à 50 heures.';
+
+      }else if(x.reason==='FERMETURE_ETABLISSEMENT'){
+
+        message=
+          'Votre pointage a été clôturé automatiquement à la fermeture.';
+
+      }else{
+
+        message=
+          'Votre service a déjà été clôturé automatiquement.';
+      }
+    }
+
+
+    result.innerHTML=
+      '<div class="err">⚠️ '+
+      message+
+      '</div>';
+
 
     stop();
 
+
     setTimeout(()=>{
+
       result.innerHTML='';
-    },5000);
+
+    },7000);
   }
 }
 function stop(){
