@@ -1146,21 +1146,44 @@ async function enforceAutomaticExit(s){
 
 
 // ===== POINTAGE EMPLOYE =====
+// ===== DISTANCE GPS =====
+
+function distanceMeters(lat1,lon1,lat2,lon2){
+
+  const R=6371000;
+
+  const rad=n=>
+    Number(n)*Math.PI/180;
+
+  const dLat=
+    rad(lat2-lat1);
+
+  const dLon=
+    rad(lon2-lon1);
+
+  const a=
+    Math.sin(dLat/2)*
+    Math.sin(dLat/2)
+    +
+    Math.cos(rad(lat1))*
+    Math.cos(rad(lat2))*
+    Math.sin(dLon/2)*
+    Math.sin(dLon/2);
+
+  const c=
+    2*Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1-a)
+    );
+
+  return R*c;
+}
 
 app.post('/api/punch',async(req,res)=>{
-
-  // Ancien QR dynamique conservé pendant les tests
-  if(!valid(req.body.token)){
-    return res.status(400).json({
-      error:'QR_EXPIRED'
-    });
-  }
-
 
   const s=await staff(
     String(req.body.code||'')
   );
-
 
   if(
     !s ||
@@ -1173,7 +1196,6 @@ app.post('/api/punch',async(req,res)=>{
 
 
   const action=req.body.action;
-
 
   if(
     ![
@@ -1189,8 +1211,119 @@ app.post('/api/punch',async(req,res)=>{
   }
 
 
-  // Avant chaque nouveau pointage,
-  // vérifier les sorties automatiques
+  // ===== QR PERMANENT =====
+
+  const qrEstablishmentId=
+    readPermanentQR(req.body.token);
+
+  if(!qrEstablishmentId){
+    return res.status(400).json({
+      error:'BAD_QR'
+    });
+  }
+
+
+  if(
+    !s.establishment_id ||
+    String(s.establishment_id)!==
+    String(qrEstablishmentId)
+  ){
+    return res.status(403).json({
+      error:'WRONG_ESTABLISHMENT'
+    });
+  }
+
+
+  // ===== GPS EMPLOYE =====
+
+  const latitude=
+    Number(req.body.latitude);
+
+  const longitude=
+    Number(req.body.longitude);
+
+  const accuracy=
+    Number(req.body.accuracy);
+
+
+  if(
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude)
+  ){
+    return res.status(400).json({
+      error:'GPS_REQUIRED'
+    });
+  }
+
+
+  if(
+    Number.isFinite(accuracy) &&
+    accuracy>100
+  ){
+    return res.status(400).json({
+      error:'GPS_INACCURATE',
+      accuracy
+    });
+  }
+
+
+  const estQ=await pool.query(`
+    SELECT
+      id,
+      latitude,
+      longitude,
+      radius_m
+    FROM establishments
+    WHERE id=$1
+      AND active=true
+    LIMIT 1
+  `,[qrEstablishmentId]);
+
+
+  const establishment=
+    estQ.rows[0];
+
+
+  if(!establishment){
+    return res.status(404).json({
+      error:'ESTABLISHMENT_NOT_FOUND'
+    });
+  }
+
+
+  if(
+    establishment.latitude==null ||
+    establishment.longitude==null
+  ){
+    return res.status(409).json({
+      error:'GPS_NOT_CONFIGURED'
+    });
+  }
+
+
+  const distance=
+    distanceMeters(
+      latitude,
+      longitude,
+      Number(establishment.latitude),
+      Number(establishment.longitude)
+    );
+
+
+  const radius=
+    Number(establishment.radius_m || 30);
+
+
+  if(distance>radius){
+    return res.status(403).json({
+      error:'TOO_FAR',
+      distance:Math.round(distance),
+      radius
+    });
+  }
+
+
+  // Vérifie les sorties automatiques
   await enforceAutomaticExit(s);
 
 
@@ -1212,7 +1345,6 @@ app.post('/api/punch',async(req,res)=>{
       last.type==='out' &&
       last.automatic
     ){
-
       return res.status(409).json({
         error:'AUTO_CLOSED',
         reason:last.auto_reason,
@@ -1230,14 +1362,11 @@ app.post('/api/punch',async(req,res)=>{
     await establishmentRules(s);
 
 
-  // Contrôles supplémentaires
-  // lorsque l'employé veut commencer
   if(action==='in' && rules){
 
     const now=new Date();
 
 
-    // 1. Vérification fermeture établissement
     const localTime=await pool.query(`
       SELECT
         (
@@ -1249,14 +1378,12 @@ app.post('/api/punch',async(req,res)=>{
 
 
     if(localTime.rows[0].closed){
-
       return res.status(409).json({
         error:'ESTABLISHMENT_CLOSED'
       });
     }
 
 
-    // 2. Vérification limite journalière
     const firstIn=
       await firstInOfDay(
         s.id,
@@ -1276,7 +1403,6 @@ app.post('/api/punch',async(req,res)=>{
 
 
       if(now>=dayDeadline){
-
         return res.status(409).json({
           error:'DAY_LIMIT'
         });
@@ -1284,7 +1410,6 @@ app.post('/api/punch',async(req,res)=>{
     }
 
 
-    // 3. Vérification 50 h semaine
     const weekMs=
       await weeklyWorkedMs(
         s.id,
@@ -1300,7 +1425,6 @@ app.post('/api/punch',async(req,res)=>{
 
 
     if(weekMs>=weekLimitMs){
-
       return res.status(409).json({
         error:'WEEK_LIMIT'
       });
@@ -1320,7 +1444,7 @@ app.post('/api/punch',async(req,res)=>{
   `,[
     crypto.randomUUID(),
     s.id,
-    s.establishment_id,
+    qrEstablishmentId,
     action
   ]);
 
@@ -1329,7 +1453,9 @@ app.post('/api/punch',async(req,res)=>{
     ok:true,
     type:action,
     time:q.rows[0].time,
-    name:s.name
+    name:s.name,
+    distance:Math.round(distance),
+    radius
   });
 });
 function next(last, a) {
