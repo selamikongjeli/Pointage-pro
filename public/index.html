@@ -126,6 +126,15 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
   <div id="mstaff"></div>
   </div>
   <div class="card">
+  <h3>♻️ Employés désactivés</h3>
+
+  <button class="x" onclick="managerLoadInactiveStaff()">
+    Actualiser
+  </button>
+
+  <div id="minactive"></div>
+</div>
+  <div class="card">
   <h3>📊 Rapport des heures</h3>
 
   <input id="mmonth" type="month">
@@ -196,6 +205,15 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <button onclick="addStaff()">Ajouter</button>
 </div>
 <div class="card"><h3>Employés</h3><div id="staff"></div></div>
+  <div class="card">
+  <h3>♻️ Employés désactivés</h3>
+
+  <button class="x" onclick="loadInactiveStaff()">
+    Actualiser
+  </button>
+
+  <div id="inactiveStaff"></div>
+</div>
 <div class="card">
 <h3>Rapport mensuel</h3>
 <input id="month" type="month">
@@ -240,6 +258,7 @@ function mode(x){
     document.getElementById('mWelcome').textContent=
       'Bonjour '+j.manager.name;
 await managerLoadStaff();
+await managerLoadInactiveStaff();
  }catch(e){
   console.error(e);
   alert('Identifiant ou PIN responsable incorrect');
@@ -467,7 +486,91 @@ async function managerLoadStaff(){
   }
 }
 
+async function managerLoadInactiveStaff(){
 
+  try{
+
+    const list=await api(
+      '/api/manager/staff/inactive',
+      {
+        headers:{
+          'Authorization':'Bearer '+managerToken
+        }
+      }
+    );
+
+    const box=
+      document.getElementById('minactive');
+
+    if(!list.length){
+
+      box.innerHTML=
+        '<p>Aucun employé désactivé.</p>';
+
+      return;
+    }
+
+    box.innerHTML=list.map(v=>`
+      <div class="item">
+
+        <b>${esc(v.name)}</b>
+        — ${esc(v.role)}<br>
+
+        Code : ${esc(v.code)}<br><br>
+
+        <button class="g"
+          onclick="managerReactivateStaff('${v.id}')">
+
+          ♻️ Réactiver
+
+        </button>
+
+      </div>
+    `).join('');
+
+  }catch(e){
+
+    console.error(e);
+
+    document.getElementById('minactive').innerHTML=
+      '<div class="err">Impossible de charger les anciens employés.</div>';
+  }
+}
+
+
+async function managerReactivateStaff(id){
+
+  if(!confirm(
+    'Réactiver cet employé ?\n\n'+
+    'Il pourra de nouveau se connecter avec son code et son PIN.'
+  )){
+    return;
+  }
+
+  try{
+
+    await api(
+      '/api/manager/staff/'+id+'/reactivate',
+      {
+        method:'PATCH',
+        headers:{
+          'Authorization':'Bearer '+managerToken
+        }
+      }
+    );
+
+    await managerLoadStaff();
+    await managerLoadInactiveStaff();
+
+    alert('✅ Employé réactivé');
+
+  }catch(e){
+
+    console.error(e);
+
+    alert('Impossible de réactiver cet employé.');
+  }
+}
 async function managerEditStaff(v){
   const name=prompt('Nom :',v.name);
   if(name===null) return;
@@ -529,6 +632,7 @@ async function managerDeleteStaff(id){
     });
 
     await managerLoadStaff();
+    await managerLoadInactiveStaff();
    alert('Employé désactivé');
   }catch(e){
     console.error(e);
@@ -791,6 +895,7 @@ async function adminEnter(){
     await refreshQR();
     await loadEstablishments();
 loadStaff();
+loadInactiveStaff();
 history();
 report();
   }catch(e){alert('PIN patron incorrect')}
@@ -1172,6 +1277,91 @@ async function loadStaff(){
     </div>
   `).join('');
 }async function editStaff(v){
+  async function loadInactiveStaff(){
+
+  try{
+
+    const list=await api(
+      '/api/staff/inactive',
+      {
+        headers:{
+          'x-admin-pin':admin
+        }
+      }
+    );
+
+    const box=
+      document.getElementById('inactiveStaff');
+
+    if(!list.length){
+
+      box.innerHTML=
+        '<p>Aucun employé désactivé.</p>';
+
+      return;
+    }
+
+    box.innerHTML=list.map(v=>`
+      <div class="item">
+
+        <b>${esc(v.name)}</b>
+        — ${esc(v.role)}<br>
+
+        Code ${esc(v.code)}<br><br>
+
+        <button class="g"
+          onclick="reactivateStaff('${v.id}')">
+
+          ♻️ Réactiver
+
+        </button>
+
+      </div>
+    `).join('');
+
+  }catch(e){
+
+    console.error(e);
+
+    document.getElementById('inactiveStaff').innerHTML=
+      '<div class="err">Impossible de charger les anciens employés.</div>';
+  }
+}
+
+
+async function reactivateStaff(id){
+
+  if(!confirm(
+    'Réactiver cet employé ?\n\n'+
+    'Il pourra de nouveau utiliser son code et son PIN.'
+  )){
+    return;
+  }
+
+  try{
+
+    await api(
+      '/api/staff/'+id+'/reactivate',
+      {
+        method:'PATCH',
+        headers:{
+          'x-admin-pin':admin
+        }
+      }
+    );
+
+    await loadStaff();
+    await loadInactiveStaff();
+
+    alert('✅ Employé réactivé');
+
+  }catch(e){
+
+    console.error(e);
+
+    alert('Impossible de réactiver cet employé.');
+  }
+}
   let name=prompt("Nom :",v.name);
   if(name===null)return;
 
@@ -1195,6 +1385,7 @@ async function loadStaff(){
     });
 
     await loadStaff();
+await loadInactiveStaff();
     alert('Employé modifié');
   }catch(x){
     alert(x.error==='CODE_EXISTS' ? 'Code déjà utilisé' :
