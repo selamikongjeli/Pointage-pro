@@ -1573,14 +1573,15 @@ async function buildHoursReport(month,establishmentId=null){
 
   // Employés concernés
   let staffSql=`
-    SELECT
-      id,
-      name,
-      code,
-      establishment_id
-    FROM staff
-    WHERE active=true
-  `;
+  SELECT
+    id,
+    name,
+    code,
+    establishment_id,
+    active
+  FROM staff
+  WHERE 1=1
+`;
 
   const staffParams=[];
 
@@ -1606,9 +1607,14 @@ async function buildHoursReport(month,establishmentId=null){
 
   // Applique d'abord les éventuelles
   // sorties automatiques 11h / 50h / 23h30
-  for(const s of staffRows){
-    try{
-      await enforceAutomaticExit(s);
+ for(const s of staffRows){
+
+  if(!s.active){
+    continue;
+  }
+
+  try{
+    await enforceAutomaticExit(s);
     }catch(e){
       console.error(
         'AUTO EXIT REPORT',
@@ -1645,13 +1651,13 @@ async function buildHoursReport(month,establishmentId=null){
 
       FROM punches p
 
-      JOIN staff s
-        ON s.id=p.staff_id
+     JOIN staff s
+  ON s.id=p.staff_id
 
-      WHERE
-        s.active=true
+WHERE
+  1=1
 
-        ${establishmentFilter}
+  ${establishmentFilter}
 
         AND
         (
@@ -2025,16 +2031,17 @@ async function buildHoursReport(month,establishmentId=null){
   for(const person of staffRows){
 
     monthlyMap[person.id]={
-      staff_id:person.id,
-      name:person.name,
-      code:person.code,
+  staff_id:person.id,
+  name:person.name,
+  code:person.code,
+  active:person.active,
 
-      work_minutes:0,
-      pause_minutes:0,
-      days:0,
-      events:0,
-      automatic_exits:0
-    };
+  work_minutes:0,
+  pause_minutes:0,
+  days:0,
+  events:0,
+  automatic_exits:0
+};
   }
 
 
@@ -2074,8 +2081,13 @@ async function buildHoursReport(month,establishmentId=null){
   }
 
 
-  const monthly=
-    Object.values(monthlyMap);
+ const monthly=
+  Object.values(monthlyMap).filter(
+    m =>
+      m.active ||
+      m.work_minutes>0 ||
+      m.events>0
+  );
 
 
   // Compatibilité avec votre ancien écran
