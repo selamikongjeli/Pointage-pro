@@ -1964,26 +1964,19 @@ async function buildHoursReport(month,establishmentId=null){
 }
 
 
-// ===== SUPER ADMIN =====
+// ===== RAPPORT SUPER ADMIN =====
 
 app.get('/api/report',auth,async(req,res)=>{
-
   try{
 
     const month=String(
       req.query.month ||
-      new Date()
-        .toISOString()
-        .slice(0,7)
+      new Date().toISOString().slice(0,7)
     );
-
 
     res.json(
-      await buildHoursReport(
-        month
-      )
+      await buildHoursReport(month)
     );
-
 
   }catch(e){
 
@@ -1996,19 +1989,15 @@ app.get('/api/report',auth,async(req,res)=>{
 });
 
 
-// ===== RESPONSABLE =====
+// ===== RAPPORT RESPONSABLE =====
 
 app.get('/api/manager/report',managerAuth,async(req,res)=>{
-
   try{
 
     const month=String(
       req.query.month ||
-      new Date()
-        .toISOString()
-        .slice(0,7)
+      new Date().toISOString().slice(0,7)
     );
-
 
     res.json(
       await buildHoursReport(
@@ -2017,7 +2006,6 @@ app.get('/api/manager/report',managerAuth,async(req,res)=>{
       )
     );
 
-
   }catch(e){
 
     console.error(e);
@@ -2027,6 +2015,8 @@ app.get('/api/manager/report',managerAuth,async(req,res)=>{
     });
   }
 });
+
+
 app.get('/api/export.csv',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.name,s.code,p.type,p.time from punches p join staff s on s.id=p.staff_id where p.time >= $1::date and p.time < ($1::date + interval '1 month') order by s.name,p.time",[st])).rows,L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'},lines=['Employé;Code;Action;Date/heure'];for(let r of rows)lines.push([r.name,r.code,L[r.type],new Date(r.time).toLocaleString('fr-BE')].map(v=>`"${String(v).replaceAll('"','""')}"`).join(';'));res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="pointage-${m}.csv"`);res.send('\ufeff'+lines.join('\n'))});
 
 
