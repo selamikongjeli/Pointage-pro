@@ -198,7 +198,69 @@ app.post('/api/admin/establishments', auth, async(req,res)=>{
 
   res.json(q.rows[0]);
 });
+// ===== POSITION GPS ETABLISSEMENT =====
 
+app.patch('/api/admin/establishments/:id/location',auth,async(req,res)=>{
+  const latitude=Number(req.body.latitude);
+  const longitude=Number(req.body.longitude);
+  const radius=Number(req.body.radius_m || 100);
+
+  if(
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90
+  ){
+    return res.status(400).json({error:'BAD_LATITUDE'});
+  }
+
+  if(
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180
+  ){
+    return res.status(400).json({error:'BAD_LONGITUDE'});
+  }
+
+  if(
+    !Number.isFinite(radius) ||
+    radius < 20 ||
+    radius > 2000
+  ){
+    return res.status(400).json({error:'BAD_RADIUS'});
+  }
+
+  const q=await pool.query(`
+    UPDATE establishments
+    SET
+      latitude=$1,
+      longitude=$2,
+      radius_m=$3
+    WHERE id=$4
+    RETURNING
+      id,
+      name,
+      address,
+      latitude,
+      longitude,
+      radius_m
+  `,[
+    latitude,
+    longitude,
+    radius,
+    req.params.id
+  ]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({
+      error:'ESTABLISHMENT_NOT_FOUND'
+    });
+  }
+
+  res.json({
+    ok:true,
+    establishment:q.rows[0]
+  });
+});
 
 app.post('/api/admin/establishments/:id/manager', auth, async(req,res)=>{
   const establishmentId = req.params.id;
