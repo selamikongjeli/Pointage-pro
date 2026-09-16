@@ -467,7 +467,7 @@ async function managerLoadStaff(){
   }
 }
 
-}
+
 async function managerEditStaff(v){
   const name=prompt('Nom :',v.name);
   if(name===null) return;
@@ -537,7 +537,7 @@ async function managerDeleteStaff(id){
   }
 }
   
-}
+
   function formatMinutes(minutes){
   const m=Math.max(0,Number(minutes)||0);
   const h=Math.floor(m/60);
