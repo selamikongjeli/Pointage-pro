@@ -531,6 +531,7 @@ app.get('/api/manager/staff',managerAuth,async(req,res)=>{
     SELECT id,name,code,role,active
     FROM staff
     WHERE establishment_id=$1
+    AND active=true
     ORDER BY name
   `,[req.manager.establishment_id]);
 
@@ -639,22 +640,48 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 });
 
 app.delete('/api/manager/staff/:id',managerAuth,async(req,res)=>{
+
   const q=await pool.query(`
-    DELETE FROM staff
-    WHERE id=$1 AND establishment_id=$2
-    RETURNING id
-  `,[req.params.id,req.manager.establishment_id]);
+    UPDATE staff
+    SET active=false
+    WHERE id=$1
+      AND establishment_id=$2
+      AND active=true
+    RETURNING id,name,code
+  `,[
+    req.params.id,
+    req.manager.establishment_id
+  ]);
 
   if(!q.rows[0]){
-    return res.status(404).json({error:'NOT_FOUND'});
+    return res.status(404).json({
+      error:'NOT_FOUND'
+    });
   }
+
+  res.json({
+    ok:true,
+    staff:q.rows[0]
+  });
+});
 
   res.json({ok:true});
 });
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
 app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.floor(Date.now()/1000)%60)}));
-app.get('/api/staff',auth,async(req,res)=>res.json((await pool.query('select id,name,code,role,active from staff order by name')).rows));
+app.get('/api/staff',auth,async(req,res)=>
+  res.json(
+    (
+      await pool.query(`
+        SELECT id,name,code,role,active
+        FROM staff
+        WHERE active=true
+        ORDER BY name
+      `)
+    ).rows
+  )
+);
 app.post('/api/staff',auth,async(req,res)=>{let pin=String(req.body.pin||'');if(!req.body.name||!req.body.code||pin.length<4)return res.status(400).json({error:'INVALID'});let p=mk(pin);try{await pool.query('insert into staff(id,name,code,role,pin_salt,pin_hash) values($1,$2,$3,$4,$5,$6)',[crypto.randomUUID(),req.body.name,req.body.code,req.body.role||'Employé',p.salt,p.hash]);res.json({ok:true})}catch(e){res.status(409).json({error:'CODE_EXISTS'})}});
 app.patch('/api/staff/:id',auth,async(req,res)=>{
   let id=req.params.id;
@@ -686,8 +713,26 @@ app.patch('/api/staff/:id',auth,async(req,res)=>{
 });
 
 app.delete('/api/staff/:id',auth,async(req,res)=>{
-  await pool.query('delete from staff where id=$1',[req.params.id]);
-  res.json({ok:true});
+
+  const q=await pool.query(`
+    UPDATE staff
+    SET active=false
+    WHERE id=$1
+      AND active=true
+    RETURNING id,name,code
+  `,[req.params.id]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({
+      error:'NOT_FOUND'
+    });
+  }
+
+  res.json({
+    ok:true,
+    staff:q.rows[0]
+  });
+});
 });
 app.post('/api/login',async(req,res)=>{
   let s=await staff(String(req.body.code||''));
