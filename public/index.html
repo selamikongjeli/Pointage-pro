@@ -168,7 +168,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 
     <input id="estLongitude" type="number" step="any" placeholder="Longitude">
 
-    <input id="estRadius" type="number" value="20" placeholder="Rayon autorisé en mètres">
+    <input id="estRadius" type="number" value="30" placeholder="Rayon autorisé en mètres">
 
     <button class="g" onclick="createEstablishment()">
       Créer l'établissement
@@ -454,9 +454,9 @@ async function managerLoadStaff(){
         </button>
 
         <button class="r"
-          onclick="managerDeleteStaff('${v.id}')">
-          🗑️ Supprimer
-        </button>
+  onclick="managerDeleteStaff('${v.id}')">
+  ⛔ Désactiver
+</button>
       </div>
     `).join('');
 
@@ -529,8 +529,7 @@ async function managerDeleteStaff(id){
     });
 
     await managerLoadStaff();
-    alert('Employé supprimé');
-
+   alert('Employé désactivé');
   }catch(e){
     console.error(e);
     alert('Suppression impossible.');
@@ -1167,9 +1166,9 @@ async function loadStaff(){
         ✏️ Modifier / PIN
       </button>
 
-      <button class="r" onclick="deleteStaff('${v.id}')">
-        🗑️ Supprimer
-      </button>
+   <button class="r" onclick="deleteStaff('${v.id}')">
+  ⛔ Désactiver
+</button>
     </div>
   `).join('');
 }async function editStaff(v){
@@ -1205,7 +1204,10 @@ async function loadStaff(){
 }
 
 async function deleteStaff(id){
-  if(!confirm("Voulez-vous vraiment supprimer cet employé ?"))return;
+  if(!confirm(
+  "Désactiver cet employé ?\n\n"+
+  "Il ne pourra plus se connecter, mais son historique sera conservé."
+))return;
 
   try{
     await api('/api/staff/'+id,{
@@ -1216,7 +1218,7 @@ async function deleteStaff(id){
     await loadStaff();
     await history();
     await report();
-    alert('Employé supprimé');
+    alert('Employé désactivé');
   }catch(x){
     alert('Suppression impossible');
   }
