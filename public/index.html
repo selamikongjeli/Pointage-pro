@@ -78,7 +78,27 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
       Déconnexion
     </button>
   </div>
+<div class="card qr">
+  <h3>📱 QR permanent de pointage</h3>
 
+  <p id="managerQrLabel">
+    QR de cet établissement
+  </p>
+
+  <button onclick="managerShowQR()">
+    📱 Afficher le QR
+  </button>
+
+  <div id="managerQrBox"
+       style="width:320px;max-width:100%;margin:15px auto;display:flex;justify-content:center">
+  </div>
+
+  <button id="managerPrintQr"
+          class="x hide"
+          onclick="managerPrintQR()">
+    🖨️ Imprimer le QR
+  </button>
+</div>
   <div class="card">
   <h3>👥 Gestion des employés</h3>
 
@@ -137,7 +157,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 
     <input id="estLongitude" type="number" step="any" placeholder="Longitude">
 
-    <input id="estRadius" type="number" value="100" placeholder="Rayon autorisé en mètres">
+    <input id="estRadius" type="number" value="20" placeholder="Rayon autorisé en mètres">
 
     <button class="g" onclick="createEstablishment()">
       Créer l'établissement
@@ -217,9 +237,140 @@ await managerLoadStaff();
 
 function managerLogout(){
   managerToken='';
+
   document.getElementById('mpin').value='';
+
   document.getElementById('ma').classList.add('hide');
   document.getElementById('mlogin').classList.remove('hide');
+
+  const qrbox=document.getElementById('managerQrBox');
+
+  if(qrbox){
+    qrbox.innerHTML='';
+  }
+
+  document
+    .getElementById('managerPrintQr')
+    ?.classList.add('hide');
+}
+  async function managerShowQR(){
+  try{
+
+    if(!managerToken){
+      alert('Veuillez vous reconnecter.');
+      return;
+    }
+
+    const j=await api('/api/manager/permanent-qr',{
+      headers:{
+        'Authorization':'Bearer '+managerToken
+      }
+    });
+
+    const box=document.getElementById('managerQrBox');
+
+    box.innerHTML='';
+
+    document.getElementById('managerQrLabel').textContent=
+      'QR permanent — '+j.establishment_name;
+
+    new QRCode(box,{
+      text:j.token,
+      width:280,
+      height:280,
+      correctLevel:QRCode.CorrectLevel.M
+    });
+
+    document
+      .getElementById('managerPrintQr')
+      .classList.remove('hide');
+
+  }catch(e){
+
+    console.error(e);
+
+    if(e.error==='MANAGER_AUTH'){
+      alert('Votre session a expiré. Reconnectez-vous.');
+      managerLogout();
+    }else{
+      alert('Impossible de générer le QR.');
+    }
+  }
+}
+
+function managerPrintQR(){
+
+  const box=document.getElementById('managerQrBox');
+
+  const img=box.querySelector('img');
+  const canvas=box.querySelector('canvas');
+
+  let src='';
+
+  if(img && img.src){
+    src=img.src;
+  }else if(canvas){
+    src=canvas.toDataURL('image/png');
+  }
+
+  if(!src){
+    alert("Affichez d'abord le QR.");
+    return;
+  }
+
+  const establishment=
+    document.getElementById('mEstName').textContent;
+
+  const w=window.open('','_blank');
+
+  if(!w){
+    alert("Le navigateur a bloqué la fenêtre d'impression.");
+    return;
+  }
+
+  w.document.write(`
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>QR Pointage</title>
+      <style>
+        body{
+          font-family:Arial;
+          text-align:center;
+          padding:40px;
+        }
+
+        img{
+          width:320px;
+          height:320px;
+        }
+      </style>
+    </head>
+
+    <body>
+
+      <h1>POINTAGE PRO</h1>
+
+      <h2>${esc(establishment)}</h2>
+
+      <p>Scannez ce QR pour enregistrer votre pointage</p>
+
+      <img src="${src}">
+
+      <p>📍 Présence dans l'établissement requise</p>
+
+      <script>
+        window.onload=function(){
+          window.print();
+        };
+      <\/script>
+
+    </body>
+    </html>
+  `);
+
+  w.document.close();
 }
   async function managerAddStaff(){
   const name=document.getElementById('msname').value.trim();
@@ -651,7 +802,7 @@ async function setEstablishmentLocation(establishmentId,currentRadius){
 
   const rayon=prompt(
     'Rayon autorisé pour le pointage en mètres :',
-    String(currentRadius || 100)
+    String(currentRadius || 30)
   );
 
   if(rayon===null) return;
