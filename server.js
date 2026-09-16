@@ -1793,14 +1793,20 @@ async function buildHoursReport(month,establishmentId=null){
 
 
   // Employés concernés
-  let staffSql=`
+ let staffSql=`
   SELECT
-    id,
-    name,
-    code,
-    establishment_id,
-    active
-  FROM staff
+    s.id,
+    s.name,
+    s.code,
+    s.establishment_id,
+    s.active,
+    e.name AS establishment_name
+
+  FROM staff s
+
+  LEFT JOIN establishments e
+    ON e.id=s.establishment_id
+
   WHERE 1=1
 `;
 
@@ -1810,7 +1816,7 @@ async function buildHoursReport(month,establishmentId=null){
     staffParams.push(establishmentId);
 
     staffSql+=`
-      AND establishment_id=$1
+     AND s.establishment_id=$1
     `;
   }
 
@@ -2151,7 +2157,11 @@ WHERE
         staff_id:person.id,
         name:person.name,
         code:person.code,
+establishment_id:
+  person.establishment_id,
 
+establishment_name:
+  person.establishment_name || 'Non attribué',
         date,
 
         work_minutes:
@@ -2208,7 +2218,11 @@ WHERE
         staff_id:d.staff_id,
         name:d.name,
         code:d.code,
+establishment_id:
+  d.establishment_id,
 
+establishment_name:
+  d.establishment_name || 'Non attribué',
         week_start:weekStart,
 
         week_end:
@@ -2251,10 +2265,17 @@ WHERE
 
   for(const person of staffRows){
 
-    monthlyMap[person.id]={
+  monthlyMap[person.id]={
   staff_id:person.id,
   name:person.name,
   code:person.code,
+
+  establishment_id:
+    person.establishment_id,
+
+  establishment_name:
+    person.establishment_name || 'Non attribué',
+
   active:person.active,
 
   work_minutes:0,
@@ -2374,8 +2395,16 @@ app.get('/api/report',auth,async(req,res)=>{
       new Date().toISOString().slice(0,7)
     );
 
+    const establishmentId=
+      String(
+        req.query.establishment_id || ''
+      ).trim() || null;
+
     res.json(
-      await buildHoursReport(month)
+      await buildHoursReport(
+        month,
+        establishmentId
+      )
     );
 
   }catch(e){
