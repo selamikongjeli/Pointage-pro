@@ -470,7 +470,45 @@ app.post('/api/manager/login',async(req,res)=>{
   });
 });
 
-app.get('/api/manager/me',managerAuth,(req,res)=>{
+app.get('/api/manager/staff/inactive',managerAuth,async(req,res)=>{
+
+  const q=await pool.query(`
+    SELECT id,name,code,role,active
+    FROM staff
+    WHERE establishment_id=$1
+      AND active=false
+    ORDER BY name
+  `,[req.manager.establishment_id]);
+
+  res.json(q.rows);
+});
+
+
+app.patch('/api/manager/staff/:id/reactivate',managerAuth,async(req,res)=>{
+
+  const q=await pool.query(`
+    UPDATE staff
+    SET active=true
+    WHERE id=$1
+      AND establishment_id=$2
+      AND active=false
+    RETURNING id,name,code,role,active
+  `,[
+    req.params.id,
+    req.manager.establishment_id
+  ]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({
+      error:'NOT_FOUND'
+    });
+  }
+
+  res.json({
+    ok:true,
+    staff:q.rows[0]
+  });
+});
   res.json({
     ok:true,
     manager:req.manager
@@ -667,7 +705,40 @@ app.delete('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
 app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.floor(Date.now()/1000)%60)}));
-app.get('/api/staff',auth,async(req,res)=>
+app.get('/api/staff/inactive',auth,async(req,res)=>{
+
+  const q=await pool.query(`
+    SELECT id,name,code,role,active
+    FROM staff
+    WHERE active=false
+    ORDER BY name
+  `);
+
+  res.json(q.rows);
+});
+
+
+app.patch('/api/staff/:id/reactivate',auth,async(req,res)=>{
+
+  const q=await pool.query(`
+    UPDATE staff
+    SET active=true
+    WHERE id=$1
+      AND active=false
+    RETURNING id,name,code,role,active
+  `,[req.params.id]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({
+      error:'NOT_FOUND'
+    });
+  }
+
+  res.json({
+    ok:true,
+    staff:q.rows[0]
+  });
+});
   res.json(
     (
       await pool.query(`
