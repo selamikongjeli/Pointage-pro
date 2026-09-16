@@ -756,7 +756,93 @@ app.patch('/api/staff/:id/reactivate',auth,async(req,res)=>{
     ).rows
   )
 );
-app.post('/api/staff',auth,async(req,res)=>{let pin=String(req.body.pin||'');if(!req.body.name||!req.body.code||pin.length<4)return res.status(400).json({error:'INVALID'});let p=mk(pin);try{await pool.query('insert into staff(id,name,code,role,pin_salt,pin_hash) values($1,$2,$3,$4,$5,$6)',[crypto.randomUUID(),req.body.name,req.body.code,req.body.role||'Employé',p.salt,p.hash]);res.json({ok:true})}catch(e){res.status(409).json({error:'CODE_EXISTS'})}});
+app.post('/api/staff',auth,async(req,res)=>{
+
+  const name=String(req.body.name||'').trim();
+  const code=String(req.body.code||'').trim();
+  const role=String(req.body.role||'Employé').trim();
+  const pin=String(req.body.pin||'');
+  const establishmentId=
+    String(req.body.establishment_id||'').trim();
+
+  if(!name || !code || pin.length<4){
+    return res.status(400).json({
+      error:'INVALID'
+    });
+  }
+
+  if(!establishmentId){
+    return res.status(400).json({
+      error:'ESTABLISHMENT_REQUIRED'
+    });
+  }
+
+  const est=await pool.query(`
+    SELECT id
+    FROM establishments
+    WHERE id=$1
+      AND active=true
+    LIMIT 1
+  `,[establishmentId]);
+
+  if(!est.rows[0]){
+    return res.status(404).json({
+      error:'ESTABLISHMENT_NOT_FOUND'
+    });
+  }
+
+  const p=mk(pin);
+
+  try{
+
+    const q=await pool.query(`
+      INSERT INTO staff(
+        id,
+        name,
+        code,
+        role,
+        pin_salt,
+        pin_hash,
+        establishment_id
+      )
+      VALUES($1,$2,$3,$4,$5,$6,$7)
+      RETURNING
+        id,
+        name,
+        code,
+        role,
+        establishment_id,
+        active
+    `,[
+      crypto.randomUUID(),
+      name,
+      code,
+      role,
+      p.salt,
+      p.hash,
+      establishmentId
+    ]);
+
+    res.json({
+      ok:true,
+      staff:q.rows[0]
+    });
+
+  }catch(e){
+
+    if(e.code==='23505'){
+      return res.status(409).json({
+        error:'CODE_EXISTS'
+      });
+    }
+
+    console.error(e);
+
+    res.status(500).json({
+      error:'SERVER_ERROR'
+    });
+  }
+});
 app.patch('/api/staff/:id',auth,async(req,res)=>{
   let id=req.params.id;
   let name=String(req.body.name||'').trim();
