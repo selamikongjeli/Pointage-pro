@@ -744,6 +744,7 @@ app.patch('/api/staff/:id/reactivate',auth,async(req,res)=>{
     staff:q.rows[0]
   });
 });
+ app.get('/api/staff',auth,async(req,res)=>
   res.json(
     (
       await pool.query(`
