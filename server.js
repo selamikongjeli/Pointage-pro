@@ -664,9 +664,6 @@ app.delete('/api/manager/staff/:id',managerAuth,async(req,res)=>{
     staff:q.rows[0]
   });
 });
-
-  res.json({ok:true});
-});
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
 app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.floor(Date.now()/1000)%60)}));
@@ -732,7 +729,6 @@ app.delete('/api/staff/:id',auth,async(req,res)=>{
     ok:true,
     staff:q.rows[0]
   });
-});
 });
 app.post('/api/login',async(req,res)=>{
   let s=await staff(String(req.body.code||''));
