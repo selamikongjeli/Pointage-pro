@@ -513,7 +513,6 @@ app.patch('/api/manager/staff/:id/reactivate',managerAuth,async(req,res)=>{
     ok:true,
     manager:req.manager
   });
-});
 
 app.get('/api/manager/permanent-qr',managerAuth,(req,res)=>{
   res.json({
