@@ -86,7 +86,7 @@ async function init(){
       address text,
       latitude double precision,
       longitude double precision,
-      radius_m integer not null default 100,
+      radius_m integer not null default 30,
       active boolean not null default true,
       created_at timestamptz not null default now()
     );
@@ -1351,7 +1351,682 @@ function next(last, a) {
 }
 
 app.get('/api/history',auth,async(req,res)=>res.json((await pool.query("select p.type,p.time,s.name as staff_name,s.code from punches p join staff s on s.id=p.staff_id order by p.time desc limit 1000")).rows));
-app.get('/api/report',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.id,s.name,s.code,p.type,p.time from staff s left join punches p on p.staff_id=s.id and p.time >= $1::date and p.time < ($1::date + interval '1 month') where s.active=true order by s.name,p.time",[st])).rows,by={};for(let r of rows){by[r.id]??={name:r.name,code:r.code,e:[]};if(r.type)by[r.id].e.push(r)}let employees=Object.values(by).map(x=>{let work=0,pause=0,inn=null,ps=null;for(let e of x.e){let t=new Date(e.time);if(e.type==='in')inn=t;else if(e.type==='pause_start')ps=t;else if(e.type==='pause_end'&&ps){pause+=t-ps;ps=null}else if(e.type==='out'&&inn){work+=t-inn;inn=null}}return{name:x.name,code:x.code,hours:+Math.max(0,(work-pause)/3600000).toFixed(2),events:x.e.length}});res.json({month:m,employees})});
+// ===== RAPPORTS JOUR / SEMAINE / MOIS =====
+
+function reportDayKey(value){
+  const parts=new Intl.DateTimeFormat('en-CA',{
+    timeZone:'Europe/Brussels',
+    year:'numeric',
+    month:'2-digit',
+    day:'2-digit'
+  }).formatToParts(new Date(value));
+
+  const p={};
+
+  for(const x of parts){
+    if(x.type!=='literal'){
+      p[x.type]=x.value;
+    }
+  }
+
+  return p.year+'-'+p.month+'-'+p.day;
+}
+
+
+function weekStartFromDay(day){
+  const d=new Date(day+'T12:00:00Z');
+
+  const diff=(d.getUTCDay()+6)%7;
+
+  d.setUTCDate(
+    d.getUTCDate()-diff
+  );
+
+  return d.toISOString().slice(0,10);
+}
+
+
+function addDaysToDay(day,number){
+  const d=new Date(day+'T12:00:00Z');
+
+  d.setUTCDate(
+    d.getUTCDate()+number
+  );
+
+  return d.toISOString().slice(0,10);
+}
+
+
+async function buildHoursReport(month,establishmentId=null){
+
+  if(!/^\d{4}-\d{2}$/.test(month)){
+    throw new Error('BAD_MONTH');
+  }
+
+
+  // Employés concernés
+  let staffSql=`
+    SELECT
+      id,
+      name,
+      code,
+      establishment_id
+    FROM staff
+    WHERE active=true
+  `;
+
+  const staffParams=[];
+
+  if(establishmentId){
+    staffParams.push(establishmentId);
+
+    staffSql+=`
+      AND establishment_id=$1
+    `;
+  }
+
+  staffSql+=`
+    ORDER BY name
+  `;
+
+
+  const staffRows=
+    (await pool.query(
+      staffSql,
+      staffParams
+    )).rows;
+
+
+  // Applique d'abord les éventuelles
+  // sorties automatiques 11h / 50h / 23h30
+  for(const s of staffRows){
+    try{
+      await enforceAutomaticExit(s);
+    }catch(e){
+      console.error(
+        'AUTO EXIT REPORT',
+        s.id,
+        e
+      );
+    }
+  }
+
+
+  const params=[month];
+
+  let establishmentFilter='';
+
+  if(establishmentId){
+    params.push(establishmentId);
+
+    establishmentFilter=`
+      AND s.establishment_id=$2
+    `;
+  }
+
+
+  // On prend les semaines complètes
+  // qui touchent le mois demandé
+  const punches=
+    (await pool.query(`
+      SELECT
+        p.staff_id,
+        p.type,
+        p.time,
+        p.automatic,
+        p.auto_reason
+
+      FROM punches p
+
+      JOIN staff s
+        ON s.id=p.staff_id
+
+      WHERE
+        s.active=true
+
+        ${establishmentFilter}
+
+        AND
+        (
+          p.time
+          AT TIME ZONE 'Europe/Brussels'
+        )::date
+        >=
+        date_trunc(
+          'week',
+          ($1 || '-01')::date
+        )::date
+
+        AND
+        (
+          p.time
+          AT TIME ZONE 'Europe/Brussels'
+        )::date
+        <
+        (
+          date_trunc(
+            'week',
+            (
+              ($1 || '-01')::date
+              + interval '1 month'
+              - interval '1 day'
+            )
+          )::date
+          + 7
+        )
+
+      ORDER BY
+        p.staff_id,
+        p.time
+    `,params)).rows;
+
+
+  const eventsByStaff={};
+
+  for(const p of punches){
+
+    if(!eventsByStaff[p.staff_id]){
+      eventsByStaff[p.staff_id]=[];
+    }
+
+    eventsByStaff[p.staff_id].push(p);
+  }
+
+
+  const daily=[];
+
+
+  for(const person of staffRows){
+
+    const events=
+      eventsByStaff[person.id] || [];
+
+    const days={};
+
+    let shift=null;
+
+
+    function saveShift(){
+
+      if(!shift){
+        return;
+      }
+
+
+      if(!days[shift.day]){
+
+        days[shift.day]={
+          workMs:0,
+          pauseMs:0,
+          events:0,
+          firstIn:null,
+          lastOut:null,
+          open:false,
+          automaticExits:0,
+          reasons:new Set()
+        };
+      }
+
+
+      const d=days[shift.day];
+
+      d.workMs+=shift.workMs;
+      d.pauseMs+=shift.pauseMs;
+      d.events+=shift.events;
+
+      d.open=d.open || shift.open;
+
+
+      if(
+        !d.firstIn ||
+        shift.firstIn<d.firstIn
+      ){
+        d.firstIn=shift.firstIn;
+      }
+
+
+      if(
+        shift.lastOut &&
+        (
+          !d.lastOut ||
+          shift.lastOut>d.lastOut
+        )
+      ){
+        d.lastOut=shift.lastOut;
+      }
+
+
+      if(shift.automatic){
+        d.automaticExits++;
+      }
+
+
+      for(const reason of shift.reasons){
+        d.reasons.add(reason);
+      }
+
+
+      shift=null;
+    }
+
+
+    for(const event of events){
+
+      const time=new Date(event.time);
+
+
+      if(event.type==='in'){
+
+        // Sécurité anciennes données
+        if(shift){
+          saveShift();
+        }
+
+
+        shift={
+          day:reportDayKey(time),
+          firstIn:time,
+          lastOut:null,
+          activeStart:time,
+          pauseStart:null,
+          workMs:0,
+          pauseMs:0,
+          events:1,
+          open:true,
+          automatic:false,
+          reasons:new Set()
+        };
+
+        continue;
+      }
+
+
+      if(!shift){
+        continue;
+      }
+
+
+      shift.events++;
+
+
+      if(event.type==='pause_start'){
+
+        if(shift.activeStart){
+
+          shift.workMs+=
+            time-shift.activeStart;
+
+          shift.activeStart=null;
+        }
+
+        shift.pauseStart=time;
+
+      }else if(event.type==='pause_end'){
+
+        if(shift.pauseStart){
+
+          shift.pauseMs+=
+            time-shift.pauseStart;
+
+          shift.pauseStart=null;
+        }
+
+        shift.activeStart=time;
+
+      }else if(event.type==='out'){
+
+        if(shift.activeStart){
+
+          shift.workMs+=
+            time-shift.activeStart;
+
+          shift.activeStart=null;
+        }
+
+
+        // Si la sortie automatique tombe
+        // pendant une pause
+        if(shift.pauseStart){
+
+          shift.pauseMs+=
+            time-shift.pauseStart;
+
+          shift.pauseStart=null;
+        }
+
+
+        shift.lastOut=time;
+        shift.open=false;
+
+
+        if(event.automatic){
+
+          shift.automatic=true;
+
+          if(event.auto_reason){
+            shift.reasons.add(
+              event.auto_reason
+            );
+          }
+        }
+
+
+        saveShift();
+      }
+    }
+
+
+    // Service encore en cours aujourd'hui
+    if(shift){
+
+      const now=new Date();
+
+      if(
+        reportDayKey(now)===
+        shift.day
+      ){
+
+        if(shift.activeStart){
+
+          shift.workMs+=
+            now-shift.activeStart;
+
+          shift.activeStart=now;
+        }
+
+
+        if(shift.pauseStart){
+
+          shift.pauseMs+=
+            now-shift.pauseStart;
+
+          shift.pauseStart=now;
+        }
+      }
+
+
+      shift.open=true;
+
+      saveShift();
+    }
+
+
+    for(const [date,d] of Object.entries(days)){
+
+      daily.push({
+        staff_id:person.id,
+        name:person.name,
+        code:person.code,
+
+        date,
+
+        work_minutes:
+          Math.round(
+            d.workMs/60000
+          ),
+
+        pause_minutes:
+          Math.round(
+            d.pauseMs/60000
+          ),
+
+        events:d.events,
+
+        first_in:
+          d.firstIn
+            ? d.firstIn.toISOString()
+            : null,
+
+        last_out:
+          d.lastOut
+            ? d.lastOut.toISOString()
+            : null,
+
+        open:d.open,
+
+        automatic_exits:
+          d.automaticExits,
+
+        auto_reasons:
+          Array.from(d.reasons)
+      });
+    }
+  }
+
+
+  // ===== PAR SEMAINE =====
+
+  const weeklyMap={};
+
+
+  for(const d of daily){
+
+    const weekStart=
+      weekStartFromDay(d.date);
+
+    const key=
+      d.staff_id+'|'+weekStart;
+
+
+    if(!weeklyMap[key]){
+
+      weeklyMap[key]={
+        staff_id:d.staff_id,
+        name:d.name,
+        code:d.code,
+
+        week_start:weekStart,
+
+        week_end:
+          addDaysToDay(
+            weekStart,
+            6
+          ),
+
+        work_minutes:0,
+        pause_minutes:0,
+        days:0,
+        automatic_exits:0
+      };
+    }
+
+
+    const w=weeklyMap[key];
+
+    w.work_minutes+=
+      d.work_minutes;
+
+    w.pause_minutes+=
+      d.pause_minutes;
+
+    w.days++;
+
+    w.automatic_exits+=
+      d.automatic_exits;
+  }
+
+
+  const weekly=
+    Object.values(weeklyMap);
+
+
+  // ===== PAR MOIS =====
+
+  const monthlyMap={};
+
+
+  for(const person of staffRows){
+
+    monthlyMap[person.id]={
+      staff_id:person.id,
+      name:person.name,
+      code:person.code,
+
+      work_minutes:0,
+      pause_minutes:0,
+      days:0,
+      events:0,
+      automatic_exits:0
+    };
+  }
+
+
+  for(const d of daily){
+
+    if(
+      !d.date.startsWith(
+        month+'-'
+      )
+    ){
+      continue;
+    }
+
+
+    const m=
+      monthlyMap[d.staff_id];
+
+
+    if(!m){
+      continue;
+    }
+
+
+    m.work_minutes+=
+      d.work_minutes;
+
+    m.pause_minutes+=
+      d.pause_minutes;
+
+    m.days++;
+
+    m.events+=
+      d.events;
+
+    m.automatic_exits+=
+      d.automatic_exits;
+  }
+
+
+  const monthly=
+    Object.values(monthlyMap);
+
+
+  // Compatibilité avec votre ancien écran
+  const employees=
+    monthly.map(m=>({
+
+      name:m.name,
+
+      code:m.code,
+
+      hours:
+        Number(
+          (
+            m.work_minutes/60
+          ).toFixed(2)
+        ),
+
+      events:m.events
+    }));
+
+
+  daily.sort(
+    (a,b)=>
+      a.date.localeCompare(b.date)
+      ||
+      a.name.localeCompare(b.name)
+  );
+
+
+  weekly.sort(
+    (a,b)=>
+      a.week_start.localeCompare(
+        b.week_start
+      )
+      ||
+      a.name.localeCompare(b.name)
+  );
+
+
+  monthly.sort(
+    (a,b)=>
+      a.name.localeCompare(b.name)
+  );
+
+
+  return {
+    month,
+    daily,
+    weekly,
+    monthly,
+    employees
+  };
+}
+
+
+// ===== SUPER ADMIN =====
+
+app.get('/api/report',auth,async(req,res)=>{
+
+  try{
+
+    const month=String(
+      req.query.month ||
+      new Date()
+        .toISOString()
+        .slice(0,7)
+    );
+
+
+    res.json(
+      await buildHoursReport(
+        month
+      )
+    );
+
+
+  }catch(e){
+
+    console.error(e);
+
+    res.status(400).json({
+      error:'REPORT_ERROR'
+    });
+  }
+});
+
+
+// ===== RESPONSABLE =====
+
+app.get('/api/manager/report',managerAuth,async(req,res)=>{
+
+  try{
+
+    const month=String(
+      req.query.month ||
+      new Date()
+        .toISOString()
+        .slice(0,7)
+    );
+
+
+    res.json(
+      await buildHoursReport(
+        month,
+        req.manager.establishment_id
+      )
+    );
+
+
+  }catch(e){
+
+    console.error(e);
+
+    res.status(400).json({
+      error:'REPORT_ERROR'
+    });
+  }
+});
 app.get('/api/export.csv',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.name,s.code,p.type,p.time from punches p join staff s on s.id=p.staff_id where p.time >= $1::date and p.time < ($1::date + interval '1 month') order by s.name,p.time",[st])).rows,L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'},lines=['Employé;Code;Action;Date/heure'];for(let r of rows)lines.push([r.name,r.code,L[r.type],new Date(r.time).toLocaleString('fr-BE')].map(v=>`"${String(v).replaceAll('"','""')}"`).join(';'));res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="pointage-${m}.csv"`);res.send('\ufeff'+lines.join('\n'))});
 
 
