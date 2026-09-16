@@ -124,9 +124,20 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <div class="card">
   <h3>👥 Mes employés</h3>
   <div id="mstaff"></div>
+  </div>
+  <div class="card">
+  <h3>📊 Rapport des heures</h3>
+
+  <input id="mmonth" type="month">
+
+  <button onclick="managerReport()">
+    Afficher
+  </button>
+
+  <div id="mrep"></div>
+</div>
 </div>
 
-</div>
 
 </section>
 <section id="a" class="hide">
@@ -455,7 +466,143 @@ async function managerLoadStaff(){
       '<div class="err">Impossible de charger les employés.</div>';
   }
 }
+function minutesToHours(minutes){
+  const m=Math.max(0,Number(minutes)||0);
+  const h=Math.floor(m/60);
+  const min=Math.round(m%60);
 
+  return h+' h '+String(min).padStart(2,'0');
+}
+
+async function managerReport(){
+  try{
+    const month=document.getElementById('mmonth').value;
+
+    if(!month){
+      alert('Choisissez un mois.');
+      return;
+    }
+
+    const j=await api(
+      '/api/manager/report?month='+encodeURIComponent(month),
+      {
+        headers:{
+          'Authorization':'Bearer '+managerToken
+        }
+      }
+    );
+
+    const box=document.getElementById('mrep');
+
+    let html='';
+
+    html+='<h4>📅 Détail par jour</h4>';
+
+    if(!j.daily.length){
+      html+='<p>Aucune heure pour ce mois.</p>';
+    }else{
+      html+=`
+        <table>
+          <tr>
+            <th>Date</th>
+            <th>Employé</th>
+            <th>Travail</th>
+            <th>Pause</th>
+          </tr>
+      `;
+
+      for(const d of j.daily){
+        html+=`
+          <tr>
+            <td>${esc(d.date)}</td>
+            <td>${esc(d.name)}</td>
+            <td>${minutesToHours(d.workMinutes)}</td>
+            <td>${minutesToHours(d.pauseMinutes)}</td>
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    html+='<h4 style="margin-top:25px">📆 Total par semaine</h4>';
+
+    if(!j.weekly.length){
+      html+='<p>Aucune donnée.</p>';
+    }else{
+      html+=`
+        <table>
+          <tr>
+            <th>Semaine</th>
+            <th>Employé</th>
+            <th>Heures</th>
+            <th>Limite</th>
+          </tr>
+      `;
+
+      for(const w of j.weekly){
+
+        const warning=
+          Number(w.workMinutes)>=3000
+          ? '⚠️ 50 h atteintes'
+          : 'OK';
+
+        html+=`
+          <tr>
+            <td>${esc(w.week)}</td>
+            <td>${esc(w.name)}</td>
+            <td>${minutesToHours(w.workMinutes)}</td>
+            <td>${warning}</td>
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    html+='<h4 style="margin-top:25px">📊 Total du mois</h4>';
+
+    html+=`
+      <table>
+        <tr>
+          <th>Employé</th>
+          <th>Travail</th>
+          <th>Pauses</th>
+          <th>Jours</th>
+        </tr>
+    `;
+
+    for(const e of j.employees){
+      html+=`
+        <tr>
+          <td>${esc(e.name)}</td>
+          <td><b>${minutesToHours(e.workMinutes)}</b></td>
+          <td>${minutesToHours(e.pauseMinutes)}</td>
+          <td>${e.days}</td>
+        </tr>
+      `;
+    }
+
+    html+='</table>';
+
+    box.innerHTML=html;
+
+  }catch(e){
+    console.error(e);
+
+    if(
+      e.error==='BAD_MANAGER_TOKEN' ||
+      e.error==='MANAGER_DISABLED'
+    ){
+      alert('Votre session a expiré. Reconnectez-vous.');
+      managerLogout();
+    }else{
+      alert('Impossible de charger le rapport.');
+    }
+  }
+}
 async function managerEditStaff(v){
   const name=prompt('Nom :',v.name);
   if(name===null) return;
@@ -524,6 +671,301 @@ async function managerDeleteStaff(id){
     alert('Suppression impossible.');
   }
 }
+  async function managerReport(){
+  try{
+    const month=document.getElementById('mmonth').value;
+
+    if(!month){
+      alert('Choisissez un mois.');
+      return;
+    }
+
+    const j=await api(
+      '/api/manager/report?month='+encodeURIComponent(month),
+      {
+        headers:{
+          'Authorization':'Bearer '+managerToken
+        }
+      }
+    );
+
+    const box=document.getElementById('mrep');
+
+    let html='';
+
+    html+='<h4>📅 Détail par jour</h4>';
+
+    if(!j.daily || !j.daily.length){
+      html+='<p>Aucun pointage pour ce mois.</p>';
+    }else{
+      html+=`
+        <table>
+          <tr>
+            <th>Date</th>
+            <th>Employé</th>
+            <th>Heures</th>
+            <th>Pause</th>
+          </tr>
+      `;
+
+      for(const d of j.daily){
+        html+=`
+          <tr>
+            <td>${esc(d.date)}</td>
+            <td>${esc(d.name)}</td>
+            <td>${formatMinutes(d.workMinutes)}</td>
+            <td>${formatMinutes(d.pauseMinutes)}</td>
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    html+='<h4 style="margin-top:20px">📊 Total du mois</h4>';
+
+    html+=`
+      <table>
+        <tr>
+          <th>Employé</th>
+          <th>Jours</th>
+          <th>Heures</th>
+          <th>Pauses</th>
+        </tr>
+    `;
+
+    for(const e of j.employees || []){
+      html+=`
+        <tr>
+          <td>${esc(e.name)}</td>
+          <td>${e.days}</td>
+          <td>${formatMinutes(e.workMinutes)}</td>
+          <td>${formatMinutes(e.pauseMinutes)}</td>
+        </tr>
+      `;
+    }
+
+    html+='</table>';
+
+    box.innerHTML=html;
+
+  }catch(e){
+    console.error(e);
+    alert('Impossible de charger le rapport.');
+  }
+}
+  function formatMinutes(minutes){
+  const m=Math.max(0,Number(minutes)||0);
+  const h=Math.floor(m/60);
+  const min=Math.round(m%60);
+
+  return h+' h '+String(min).padStart(2,'0');
+}
+
+function formatReportDate(date){
+  if(!date) return '';
+
+  return new Date(
+    date+'T12:00:00'
+  ).toLocaleDateString('fr-BE');
+}
+
+async function managerReport(){
+
+  const month=
+    document.getElementById('mmonth').value;
+
+  const box=
+    document.getElementById('mrep');
+
+  if(!month){
+    alert('Choisissez un mois.');
+    return;
+  }
+
+  box.innerHTML='<p>Chargement...</p>';
+
+  try{
+
+    const j=await api(
+      '/api/manager/report?month='+
+      encodeURIComponent(month),
+      {
+        headers:{
+          'Authorization':
+            'Bearer '+managerToken
+        }
+      }
+    );
+
+
+    let html='';
+
+
+    // ===== PAR JOUR =====
+
+    html+=`
+      <h3>📅 Détail par jour</h3>
+    `;
+
+    if(!j.daily || !j.daily.length){
+
+      html+='<p>Aucun pointage pour ce mois.</p>';
+
+    }else{
+
+      html+=`
+        <table>
+          <tr>
+            <th>Date</th>
+            <th>Employé</th>
+            <th>Travail</th>
+            <th>Pause</th>
+          </tr>
+      `;
+
+      for(const d of j.daily){
+
+        html+=`
+          <tr>
+            <td>${formatReportDate(d.date)}</td>
+            <td>${esc(d.name)}</td>
+            <td><b>${formatMinutes(d.workMinutes)}</b></td>
+            <td>${formatMinutes(d.pauseMinutes)}</td>
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    // ===== PAR SEMAINE =====
+
+    html+=`
+      <br>
+      <h3>📆 Total par semaine</h3>
+    `;
+
+    if(!j.weekly || !j.weekly.length){
+
+      html+='<p>Aucune semaine enregistrée.</p>';
+
+    }else{
+
+      html+=`
+        <table>
+          <tr>
+            <th>Semaine</th>
+            <th>Employé</th>
+            <th>Heures</th>
+          </tr>
+      `;
+
+      for(const w of j.weekly){
+
+        html+=`
+          <tr>
+            <td>
+              ${formatReportDate(w.weekStart)}
+              →
+              ${formatReportDate(w.weekEnd)}
+            </td>
+
+            <td>${esc(w.name)}</td>
+
+            <td>
+              <b>${formatMinutes(w.workMinutes)}</b>
+              ${
+                Number(w.workMinutes)>=3000
+                ? '<br>⚠️ Limite 50 h'
+                : ''
+              }
+            </td>
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    // ===== TOTAL DU MOIS =====
+
+    html+=`
+      <br>
+      <h3>📊 Total du mois</h3>
+    `;
+
+    if(!j.employees || !j.employees.length){
+
+      html+='<p>Aucun employé.</p>';
+
+    }else{
+
+      html+=`
+        <table>
+          <tr>
+            <th>Employé</th>
+            <th>Travail</th>
+            <th>Pause</th>
+            <th>Jours</th>
+          </tr>
+      `;
+
+      for(const e of j.employees){
+
+        html+=`
+          <tr>
+            <td>${esc(e.name)}</td>
+
+            <td>
+              <b>
+                ${formatMinutes(e.workMinutes)}
+              </b>
+            </td>
+
+            <td>
+              ${formatMinutes(e.pauseMinutes)}
+            </td>
+
+            <td>
+              ${Number(e.days)||0}
+            </td>
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    box.innerHTML=html;
+
+
+  }catch(e){
+
+    console.error(e);
+
+    box.innerHTML=
+      '<div class="err">'+
+      'Impossible de charger le rapport.'+
+      '</div>';
+
+    if(
+      e.error==='BAD_MANAGER_TOKEN' ||
+      e.error==='MANAGER_DISABLED'
+    ){
+      alert(
+        'Votre session a expiré. '+
+        'Reconnectez-vous.'
+      );
+
+      managerLogout();
+    }
+  }
+}
 async function api(u,o={}){
   let r=await fetch(u,o),j=await r.json().catch(()=>({}));
   if(!r.ok) throw j;
@@ -531,6 +973,12 @@ async function api(u,o={}){
 }
 async function init(){
   document.getElementById('month').value=new Date().toISOString().slice(0,7);
+  const managerMonth=document.getElementById('mmonth');
+
+if(managerMonth){
+  managerMonth.value=
+    new Date().toISOString().slice(0,7);
+}
   try{
     let s=await api('/api/status');
     if(!s.adminSetup){
