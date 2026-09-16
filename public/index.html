@@ -478,15 +478,30 @@ async function loadEstablishments(){
         <h3>🏢 ${esc(e.name)}</h3>
         <div>📍 ${e.address ? esc(e.address) : 'Adresse non définie'}</div>
         <div>Rayon : <b>${Number(e.radius_m)} m</b></div>
-        <div>👥 ${Number(e.staff_count)} employé(s)</div>
-        <div>🔐 ${Number(e.manager_count)} responsable(s)</div>
-        <br>
-        <button onclick="createManager('${e.id}','${encodeURIComponent(e.name)}')">
-          👤 Créer un responsable
-        </button>
-        <button class="o" onclick="resetManagerPin('${e.id}')">
+
+<div>
+  ${e.latitude!=null && e.longitude!=null
+    ? '✅ Position GPS configurée'
+    : '⚠️ Position GPS non configurée'}
+</div>
+
+<div>👥 ${Number(e.staff_count)} employé(s)</div>
+<div>🔐 ${Number(e.manager_count)} responsable(s)</div>
+
+<br>
+
+<button onclick="createManager('${e.id}','${encodeURIComponent(e.name)}')">
+  👤 Créer un responsable
+</button>
+
+<button class="o" onclick="resetManagerPin('${e.id}')">
   🔑 Réinitialiser PIN responsable
 </button>
+
+<button class="g" onclick="setEstablishmentLocation('${e.id}',${Number(e.radius_m)||100})">
+  📍 Définir la position GPS
+</button>
+
       </div>
     `).join('');
 
@@ -628,7 +643,100 @@ async function resetManagerPin(establishmentId){
     }
   }
 }
+async function setEstablishmentLocation(establishmentId,currentRadius){
+  if(!navigator.geolocation){
+    alert('La géolocalisation n’est pas disponible sur cet appareil.');
+    return;
+  }
 
+  const rayon=prompt(
+    'Rayon autorisé pour le pointage en mètres :',
+    String(currentRadius || 100)
+  );
+
+  if(rayon===null) return;
+
+  const radius=Number(rayon);
+
+  if(!Number.isFinite(radius) || radius<20 || radius>2000){
+    alert('Le rayon doit être compris entre 20 et 2000 mètres.');
+    return;
+  }
+
+  alert(
+    'Autorisez maintenant la localisation.\n\n'+
+    'Faites cette opération lorsque vous êtes physiquement dans l’établissement.'
+  );
+
+  navigator.geolocation.getCurrentPosition(
+    async position=>{
+      const latitude=position.coords.latitude;
+      const longitude=position.coords.longitude;
+      const accuracy=position.coords.accuracy;
+
+      if(accuracy>100){
+        alert(
+          'La précision GPS est trop faible : environ '+
+          Math.round(accuracy)+' m.\n\n'+
+          'Essayez à nouveau près d’une fenêtre ou à l’extérieur.'
+        );
+        return;
+      }
+
+      try{
+        await api(
+          '/api/admin/establishments/'+establishmentId+'/location',
+          {
+            method:'PATCH',
+            headers:{
+              'Content-Type':'application/json',
+              'x-admin-pin':admin
+            },
+            body:JSON.stringify({
+              latitude,
+              longitude,
+              radius_m:radius
+            })
+          }
+        );
+
+        await loadEstablishments();
+
+        alert(
+          '✅ Position GPS enregistrée.\n\n'+
+          'Précision : environ '+Math.round(accuracy)+' m\n'+
+          'Rayon autorisé : '+radius+' m'
+        );
+
+      }catch(e){
+        console.error(e);
+        alert("Impossible d'enregistrer la position GPS.");
+      }
+    },
+
+    error=>{
+      console.error(error);
+
+      if(error.code===1){
+        alert(
+          'Vous avez refusé la localisation.\n'+
+          'Autorisez la localisation pour Pointage Pro puis réessayez.'
+        );
+      }else{
+        alert(
+          'Impossible d’obtenir votre position GPS.\n'+
+          'Réessayez depuis votre téléphone.'
+        );
+      }
+    },
+
+    {
+      enableHighAccuracy:true,
+      timeout:15000,
+      maximumAge:0
+    }
+  );
+}
   
 async function refreshQR(){
   try{
