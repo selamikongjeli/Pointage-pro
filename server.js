@@ -127,7 +127,23 @@ ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 1;
     ALTER TABLE punches
     ADD COLUMN IF NOT EXISTS establishment_id uuid
     REFERENCES establishments(id) ON DELETE SET NULL;
+ALTER TABLE establishments
+ADD COLUMN IF NOT EXISTS closing_time time NOT NULL DEFAULT '23:30';
 
+ALTER TABLE establishments
+ADD COLUMN IF NOT EXISTS max_day_span_minutes integer NOT NULL DEFAULT 660;
+
+ALTER TABLE establishments
+ADD COLUMN IF NOT EXISTS weekly_max_minutes integer NOT NULL DEFAULT 3000;
+
+ALTER TABLE establishments
+ALTER COLUMN radius_m SET DEFAULT 30;
+
+ALTER TABLE punches
+ADD COLUMN IF NOT EXISTS automatic boolean NOT NULL DEFAULT false;
+
+ALTER TABLE punches
+ADD COLUMN IF NOT EXISTS auto_reason text;
     CREATE INDEX IF NOT EXISTS idx_punch
     ON punches(staff_id,time);
 
@@ -169,7 +185,7 @@ app.post('/api/admin/establishments', auth, async(req,res)=>{
       ? null
       : Number(req.body.longitude);
 
-  const radius = Number(req.body.radius_m || 100);
+  const radius = Number(req.body.radius_m || 30);
 
   if(!name){
     return res.status(400).json({error:'NAME_REQUIRED'});
@@ -203,7 +219,7 @@ app.post('/api/admin/establishments', auth, async(req,res)=>{
 app.patch('/api/admin/establishments/:id/location',auth,async(req,res)=>{
   const latitude=Number(req.body.latitude);
   const longitude=Number(req.body.longitude);
-  const radius=Number(req.body.radius_m || 100);
+  const radius=Number(req.body.radius_m || 30);
 
   if(
     !Number.isFinite(latitude) ||
@@ -673,7 +689,649 @@ app.delete('/api/staff/:id',auth,async(req,res)=>{
   await pool.query('delete from staff where id=$1',[req.params.id]);
   res.json({ok:true});
 });
-app.post('/api/login',async(req,res)=>{let s=await staff(String(req.body.code||''));if(!s||!ok(req.body.pin||'',s))return res.status(401).json({error:'BAD_LOGIN'});res.json({ok:true,staff:{name:s.name,role:s.role}})});
+app.post('/api/login',async(req,res)=>{
+  let s=await staff(String(req.body.code||''));
+
+  if(!s || !ok(req.body.pin||'',s)){
+    return res.status(401).json({
+      error:'BAD_LOGIN'
+    });
+  }
+
+  res.json({
+    ok:true,
+    staff:{
+      name:s.name,
+      role:s.role
+    }
+  });
+});
+// ===== LIMITES TEMPS DE TRAVAIL =====
+
+async function establishmentRules(s){
+  if(!s.establishment_id) return null;
+
+  const q=await pool.query(`
+    SELECT
+      id,
+      closing_time,
+      max_day_span_minutes,
+      weekly_max_minutes
+    FROM establishments
+    WHERE id=$1 AND active=true
+    LIMIT 1
+  `,[s.establishment_id]);
+
+  return q.rows[0] || null;
+}
+
+
+async function firstInOfDay(staffId,referenceTime){
+  const q=await pool.query(`
+    SELECT time
+    FROM punches
+    WHERE staff_id=$1
+      AND type='in'
+      AND (time AT TIME ZONE 'Europe/Brussels')::date =
+          ($2::timestamptz AT TIME ZONE 'Europe/Brussels')::date
+    ORDER BY time
+    LIMIT 1
+  `,[staffId,referenceTime]);
+
+  return q.rows[0]
+    ? new Date(q.rows[0].time)
+    : null;
+}
+
+
+async function closingDate(referenceTime,closingTime){
+  const q=await pool.query(`
+    SELECT (
+      (
+        ($1::timestamptz AT TIME ZONE 'Europe/Brussels')::date
+        + $2::time
+      )
+      AT TIME ZONE 'Europe/Brussels'
+    ) AS closing
+  `,[referenceTime,closingTime]);
+
+  return new Date(q.rows[0].closing);
+}
+
+
+async function weekEvents(staffId,referenceTime,until){
+  const q=await pool.query(`
+    SELECT type,time
+    FROM punches
+    WHERE staff_id=$1
+
+      AND
+      (time AT TIME ZONE 'Europe/Brussels') >=
+      date_trunc(
+        'week',
+        $2::timestamptz AT TIME ZONE 'Europe/Brussels'
+      )
+
+      AND
+      (time AT TIME ZONE 'Europe/Brussels') <
+      date_trunc(
+        'week',
+        $2::timestamptz AT TIME ZONE 'Europe/Brussels'
+      ) + interval '7 days'
+
+      AND time <= $3
+
+    ORDER BY time
+  `,[staffId,referenceTime,until]);
+
+  return q.rows;
+}
+
+
+function workedMs(events,until=null){
+
+  let total=0;
+  let activeStart=null;
+
+  for(const e of events){
+
+    const t=new Date(e.time);
+
+    if(until && t>until){
+      break;
+    }
+
+    if(e.type==='in'){
+
+      activeStart=t;
+
+    }else if(e.type==='pause_start'){
+
+      if(activeStart){
+        total+=t-activeStart;
+        activeStart=null;
+      }
+
+    }else if(e.type==='pause_end'){
+
+      activeStart=t;
+
+    }else if(e.type==='out'){
+
+      if(activeStart){
+        total+=t-activeStart;
+      }
+
+      activeStart=null;
+    }
+  }
+
+  if(until && activeStart){
+    total+=until-activeStart;
+  }
+
+  return Math.max(0,total);
+}
+
+
+function timeWhenWorkReached(events,until,targetMs){
+
+  if(targetMs<=0){
+    const first=events.find(e=>e.type==='in');
+
+    return first
+      ? new Date(first.time)
+      : null;
+  }
+
+  let done=0;
+  let activeStart=null;
+
+  for(const e of events){
+
+    const t=new Date(e.time);
+
+    if(t>until){
+      break;
+    }
+
+    if(e.type==='in'){
+
+      activeStart=t;
+
+    }else if(
+      e.type==='pause_start' ||
+      e.type==='out'
+    ){
+
+      if(activeStart){
+
+        const segment=t-activeStart;
+
+        if(done+segment>=targetMs){
+
+          return new Date(
+            activeStart.getTime()+
+            (targetMs-done)
+          );
+        }
+
+        done+=segment;
+        activeStart=null;
+      }
+
+    }else if(e.type==='pause_end'){
+
+      activeStart=t;
+    }
+  }
+
+  if(activeStart){
+
+    const segment=until-activeStart;
+
+    if(done+segment>=targetMs){
+
+      return new Date(
+        activeStart.getTime()+
+        (targetMs-done)
+      );
+    }
+  }
+
+  return null;
+}
+
+
+async function weeklyWorkedMs(staffId,referenceTime,until){
+
+  const events=await weekEvents(
+    staffId,
+    referenceTime,
+    until
+  );
+
+  return workedMs(events,until);
+}
+
+
+// Vérifie s'il faut créer une sortie automatique
+async function enforceAutomaticExit(s){
+
+  const rules=await establishmentRules(s);
+
+  if(!rules){
+    return null;
+  }
+
+  const lastQ=await pool.query(`
+    SELECT *
+    FROM punches
+    WHERE staff_id=$1
+    ORDER BY time DESC
+    LIMIT 1
+  `,[s.id]);
+
+  const last=lastQ.rows[0];
+
+  if(!last || last.type==='out'){
+    return null;
+  }
+
+
+  const inQ=await pool.query(`
+    SELECT time
+    FROM punches
+    WHERE staff_id=$1
+      AND type='in'
+      AND time <= $2
+    ORDER BY time DESC
+    LIMIT 1
+  `,[s.id,last.time]);
+
+  if(!inQ.rows[0]){
+    return null;
+  }
+
+  const shiftStart=
+    new Date(inQ.rows[0].time);
+
+
+  const shiftEventsQ=await pool.query(`
+    SELECT type,time
+    FROM punches
+    WHERE staff_id=$1
+      AND time >= $2
+    ORDER BY time
+  `,[s.id,shiftStart]);
+
+  const shiftEvents=shiftEventsQ.rows;
+
+
+  // Première entrée de la journée
+  const firstIn=
+    await firstInOfDay(
+      s.id,
+      shiftStart
+    );
+
+  const rawDayLimit=
+    new Date(
+      firstIn.getTime()+
+      Number(rules.max_day_span_minutes)*60000
+    );
+
+  // Sécurité : jamais avant le début du service actuel
+  const dayLimit=
+    new Date(
+      Math.max(
+        rawDayLimit.getTime(),
+        shiftStart.getTime()
+      )
+    );
+
+
+  // Heure de fermeture de l'établissement
+  const rawClosing=
+    await closingDate(
+      shiftStart,
+      rules.closing_time
+    );
+
+  const closingLimit=
+    new Date(
+      Math.max(
+        rawClosing.getTime(),
+        shiftStart.getTime()
+      )
+    );
+
+
+  const now=new Date();
+
+  const hardUntil=new Date(
+    Math.min(
+      now.getTime(),
+      dayLimit.getTime(),
+      closingLimit.getTime()
+    )
+  );
+
+
+  // Heures déjà faites dans la semaine
+  // avant le service actuel
+  const beforeShift=
+    new Date(
+      shiftStart.getTime()-1
+    );
+
+  const previousWeekEvents=
+    await weekEvents(
+      s.id,
+      shiftStart,
+      beforeShift
+    );
+
+  const previousWeekMs=
+    workedMs(previousWeekEvents);
+
+  const weeklyLimitMs=
+    Number(rules.weekly_max_minutes)*60000;
+
+  const remainingWeekMs=
+    weeklyLimitMs-previousWeekMs;
+
+
+  let weeklyLimitTime=null;
+
+  if(remainingWeekMs<=0){
+
+    weeklyLimitTime=shiftStart;
+
+  }else{
+
+    weeklyLimitTime=
+      timeWhenWorkReached(
+        shiftEvents,
+        hardUntil,
+        remainingWeekMs
+      );
+  }
+
+
+  const candidates=[];
+
+
+  if(dayLimit<=now){
+    candidates.push({
+      time:dayLimit,
+      reason:'MAX_JOUR'
+    });
+  }
+
+
+  if(closingLimit<=now){
+    candidates.push({
+      time:closingLimit,
+      reason:'FERMETURE_ETABLISSEMENT'
+    });
+  }
+
+
+  if(
+    weeklyLimitTime &&
+    weeklyLimitTime<=now
+  ){
+    candidates.push({
+      time:weeklyLimitTime,
+      reason:'MAX_SEMAINE'
+    });
+  }
+
+
+  if(!candidates.length){
+    return null;
+  }
+
+
+  candidates.sort(
+    (a,b)=>a.time-b.time
+  );
+
+  const exit=candidates[0];
+
+
+  // Vérification supplémentaire pour éviter
+  // une double sortie automatique
+  const check=await pool.query(`
+    SELECT type
+    FROM punches
+    WHERE staff_id=$1
+    ORDER BY time DESC
+    LIMIT 1
+  `,[s.id]);
+
+  if(
+    !check.rows[0] ||
+    check.rows[0].type==='out'
+  ){
+    return null;
+  }
+
+
+  await pool.query(`
+    INSERT INTO punches(
+      id,
+      staff_id,
+      establishment_id,
+      type,
+      time,
+      automatic,
+      auto_reason
+    )
+    VALUES(
+      $1,$2,$3,'out',$4,true,$5
+    )
+  `,[
+    crypto.randomUUID(),
+    s.id,
+    s.establishment_id,
+    exit.time,
+    exit.reason
+  ]);
+
+
+  return exit;
+}
+
+
+// ===== POINTAGE EMPLOYE =====
+
+app.post('/api/punch',async(req,res)=>{
+
+  // Ancien QR dynamique conservé pendant les tests
+  if(!valid(req.body.token)){
+    return res.status(400).json({
+      error:'QR_EXPIRED'
+    });
+  }
+
+
+  const s=await staff(
+    String(req.body.code||'')
+  );
+
+
+  if(
+    !s ||
+    !ok(req.body.pin||'',s)
+  ){
+    return res.status(401).json({
+      error:'BAD_LOGIN'
+    });
+  }
+
+
+  const action=req.body.action;
+
+
+  if(
+    ![
+      'in',
+      'pause_start',
+      'pause_end',
+      'out'
+    ].includes(action)
+  ){
+    return res.status(400).json({
+      error:'BAD_ACTION'
+    });
+  }
+
+
+  // Avant chaque nouveau pointage,
+  // vérifier les sorties automatiques
+  await enforceAutomaticExit(s);
+
+
+  const lastQ=await pool.query(`
+    SELECT *
+    FROM punches
+    WHERE staff_id=$1
+    ORDER BY time DESC
+    LIMIT 1
+  `,[s.id]);
+
+  const last=lastQ.rows[0];
+
+
+  if(!next(last,action)){
+
+    if(
+      last &&
+      last.type==='out' &&
+      last.automatic
+    ){
+
+      return res.status(409).json({
+        error:'AUTO_CLOSED',
+        reason:last.auto_reason,
+        time:last.time
+      });
+    }
+
+    return res.status(409).json({
+      error:'INVALID_SEQUENCE'
+    });
+  }
+
+
+  const rules=
+    await establishmentRules(s);
+
+
+  // Contrôles supplémentaires
+  // lorsque l'employé veut commencer
+  if(action==='in' && rules){
+
+    const now=new Date();
+
+
+    // 1. Vérification fermeture établissement
+    const localTime=await pool.query(`
+      SELECT
+        (
+          $1::timestamptz
+          AT TIME ZONE 'Europe/Brussels'
+        )::time >= $2::time
+        AS closed
+    `,[now,rules.closing_time]);
+
+
+    if(localTime.rows[0].closed){
+
+      return res.status(409).json({
+        error:'ESTABLISHMENT_CLOSED'
+      });
+    }
+
+
+    // 2. Vérification limite journalière
+    const firstIn=
+      await firstInOfDay(
+        s.id,
+        now
+      );
+
+
+    if(firstIn){
+
+      const dayDeadline=
+        new Date(
+          firstIn.getTime()+
+          Number(
+            rules.max_day_span_minutes
+          )*60000
+        );
+
+
+      if(now>=dayDeadline){
+
+        return res.status(409).json({
+          error:'DAY_LIMIT'
+        });
+      }
+    }
+
+
+    // 3. Vérification 50 h semaine
+    const weekMs=
+      await weeklyWorkedMs(
+        s.id,
+        now,
+        now
+      );
+
+
+    const weekLimitMs=
+      Number(
+        rules.weekly_max_minutes
+      )*60000;
+
+
+    if(weekMs>=weekLimitMs){
+
+      return res.status(409).json({
+        error:'WEEK_LIMIT'
+      });
+    }
+  }
+
+
+  const q=await pool.query(`
+    INSERT INTO punches(
+      id,
+      staff_id,
+      establishment_id,
+      type
+    )
+    VALUES($1,$2,$3,$4)
+    RETURNING time
+  `,[
+    crypto.randomUUID(),
+    s.id,
+    s.establishment_id,
+    action
+  ]);
+
+
+  res.json({
+    ok:true,
+    type:action,
+    time:q.rows[0].time,
+    name:s.name
+  });
+});
 function next(last, a) {
   if (!last) return a === 'in';
 
@@ -691,7 +1349,7 @@ function next(last, a) {
 
   return false;
 }
-app.post('/api/punch',async(req,res)=>{if(!valid(req.body.token))return res.status(400).json({error:'QR_EXPIRED'});let s=await staff(String(req.body.code||''));if(!s||!ok(req.body.pin||'',s))return res.status(401).json({error:'BAD_LOGIN'});let a=req.body.action;if(!['in','pause_start','pause_end','out'].includes(a))return res.status(400).json({error:'BAD_ACTION'});let last=(await pool.query('select * from punches where staff_id=$1 order by time desc limit 1',[s.id])).rows[0];if(!next(last,a))return res.status(409).json({error:'INVALID_SEQUENCE'});let q=await pool.query('insert into punches(id,staff_id,type) values($1,$2,$3) returning time',[crypto.randomUUID(),s.id,a]);res.json({ok:true,type:a,time:q.rows[0].time,name:s.name})});
+
 app.get('/api/history',auth,async(req,res)=>res.json((await pool.query("select p.type,p.time,s.name as staff_name,s.code from punches p join staff s on s.id=p.staff_id order by p.time desc limit 1000")).rows));
 app.get('/api/report',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.id,s.name,s.code,p.type,p.time from staff s left join punches p on p.staff_id=s.id and p.time >= $1::date and p.time < ($1::date + interval '1 month') where s.active=true order by s.name,p.time",[st])).rows,by={};for(let r of rows){by[r.id]??={name:r.name,code:r.code,e:[]};if(r.type)by[r.id].e.push(r)}let employees=Object.values(by).map(x=>{let work=0,pause=0,inn=null,ps=null;for(let e of x.e){let t=new Date(e.time);if(e.type==='in')inn=t;else if(e.type==='pause_start')ps=t;else if(e.type==='pause_end'&&ps){pause+=t-ps;ps=null}else if(e.type==='out'&&inn){work+=t-inn;inn=null}}return{name:x.name,code:x.code,hours:+Math.max(0,(work-pause)/3600000).toFixed(2),events:x.e.length}});res.json({month:m,employees})});
 app.get('/api/export.csv',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.name,s.code,p.type,p.time from punches p join staff s on s.id=p.staff_id where p.time >= $1::date and p.time < ($1::date + interval '1 month') order by s.name,p.time",[st])).rows,L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'},lines=['Employé;Code;Action;Date/heure'];for(let r of rows)lines.push([r.name,r.code,L[r.type],new Date(r.time).toLocaleString('fr-BE')].map(v=>`"${String(v).replaceAll('"','""')}"`).join(';'));res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="pointage-${m}.csv"`);res.send('\ufeff'+lines.join('\n'))});
