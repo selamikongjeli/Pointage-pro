@@ -684,6 +684,43 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 
 app.delete('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 
+  const staffId=req.params.id;
+
+  const employee=await pool.query(`
+    SELECT id,name,code
+    FROM staff
+    WHERE id=$1
+      AND establishment_id=$2
+      AND active=true
+    LIMIT 1
+  `,[
+    staffId,
+    req.manager.establishment_id
+  ]);
+
+  if(!employee.rows[0]){
+    return res.status(404).json({
+      error:'NOT_FOUND'
+    });
+  }
+
+  const last=await pool.query(`
+    SELECT type,time
+    FROM punches
+    WHERE staff_id=$1
+    ORDER BY time DESC
+    LIMIT 1
+  `,[staffId]);
+
+  if(
+    last.rows[0] &&
+    last.rows[0].type!=='out'
+  ){
+    return res.status(409).json({
+      error:'STAFF_CLOCKED_IN'
+    });
+  }
+
   const q=await pool.query(`
     UPDATE staff
     SET active=false
@@ -692,15 +729,9 @@ app.delete('/api/manager/staff/:id',managerAuth,async(req,res)=>{
       AND active=true
     RETURNING id,name,code
   `,[
-    req.params.id,
+    staffId,
     req.manager.establishment_id
   ]);
-
-  if(!q.rows[0]){
-    return res.status(404).json({
-      error:'NOT_FOUND'
-    });
-  }
 
   res.json({
     ok:true,
