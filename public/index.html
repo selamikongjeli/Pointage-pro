@@ -1492,8 +1492,338 @@ async function history(){
   hist.innerHTML=x.slice(0,100).map(v=>`<div class="item"><b>${esc(v.staff_name)}</b> — ${L[v.type]}<br>${new Date(v.time).toLocaleString('fr-BE')}</div>`).join('');
 }
 async function report(){
-  let j=await api('/api/report?month='+month.value,{headers:{'x-admin-pin':admin}});
-  rep.innerHTML='<table><tr><th>Employé</th><th>Heures</th><th>Pointages</th></tr>'+j.employees.map(v=>`<tr><td>${esc(v.name)}</td><td>${Number(v.hours).toFixed(2)} h</td><td>${v.events}</td></tr>`).join('')+'</table>';
+
+  const selectedMonth=
+    document.getElementById('month').value;
+
+  if(!selectedMonth){
+    alert('Choisissez un mois.');
+    return;
+  }
+
+  rep.innerHTML='<p>Chargement...</p>';
+
+  try{
+
+    const j=await api(
+      '/api/report?month='+
+      encodeURIComponent(selectedMonth),
+      {
+        headers:{
+          'x-admin-pin':admin
+        }
+      }
+    );
+
+    const daily=(j.daily||[]).filter(
+      d=>String(d.date||'').startsWith(
+        selectedMonth+'-'
+      )
+    );
+
+    const weekly=j.weekly||[];
+    const monthly=j.monthly||[];
+
+    function reportTime(value){
+
+      if(!value){
+        return '—';
+      }
+
+      return new Date(value)
+        .toLocaleTimeString(
+          'fr-BE',
+          {
+            hour:'2-digit',
+            minute:'2-digit',
+            timeZone:'Europe/Brussels'
+          }
+        );
+    }
+
+    function autoReason(reasons){
+
+      if(!reasons || !reasons.length){
+        return '';
+      }
+
+      return reasons.map(r=>{
+
+        if(r==='MAX_JOUR'){
+          return 'Limite 11 h';
+        }
+
+        if(r==='MAX_SEMAINE'){
+          return 'Limite 50 h';
+        }
+
+        if(r==='FERMETURE_ETABLISSEMENT'){
+          return 'Fermeture 23h30';
+        }
+
+        return r;
+
+      }).join(', ');
+    }
+
+
+    let html='';
+
+
+    // ===== DETAIL PAR JOUR =====
+
+    html+=`
+      <h3>📅 Détail par jour</h3>
+    `;
+
+    if(!daily.length){
+
+      html+=`
+        <p>
+          Aucun pointage pour ce mois.
+        </p>
+      `;
+
+    }else{
+
+      html+=`
+        <table>
+          <tr>
+            <th>Date</th>
+            <th>Employé</th>
+            <th>Entrée</th>
+            <th>Sortie</th>
+            <th>Travail</th>
+            <th>Pause</th>
+            <th>État</th>
+          </tr>
+      `;
+
+      for(const d of daily){
+
+        let status='✅ Terminé';
+
+        if(d.open){
+          status='🟠 En cours';
+        }
+
+        if(Number(d.automatic_exits)>0){
+
+          status=
+            '⚠️ Sortie automatique';
+
+          const reason=
+            autoReason(d.auto_reasons);
+
+          if(reason){
+            status+=
+              '<br><small>'+
+              esc(reason)+
+              '</small>';
+          }
+        }
+
+        html+=`
+          <tr>
+
+            <td>
+              ${formatReportDate(d.date)}
+            </td>
+
+            <td>
+              <b>${esc(d.name)}</b>
+              <br>
+              <small>${esc(d.code||'')}</small>
+            </td>
+
+            <td>
+              ${reportTime(d.first_in)}
+            </td>
+
+            <td>
+              ${reportTime(d.last_out)}
+            </td>
+
+            <td>
+              <b>
+                ${formatMinutes(d.work_minutes)}
+              </b>
+            </td>
+
+            <td>
+              ${formatMinutes(d.pause_minutes)}
+            </td>
+
+            <td>
+              ${status}
+            </td>
+
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    // ===== TOTAL PAR SEMAINE =====
+
+    html+=`
+      <br>
+      <h3>📆 Total par semaine</h3>
+    `;
+
+    if(!weekly.length){
+
+      html+=`
+        <p>
+          Aucune semaine enregistrée.
+        </p>
+      `;
+
+    }else{
+
+      html+=`
+        <table>
+          <tr>
+            <th>Semaine</th>
+            <th>Employé</th>
+            <th>Travail</th>
+            <th>Pause</th>
+            <th>Jours</th>
+          </tr>
+      `;
+
+      for(const w of weekly){
+
+        html+=`
+          <tr>
+
+            <td>
+              ${formatReportDate(w.week_start)}
+              →
+              ${formatReportDate(w.week_end)}
+            </td>
+
+            <td>
+              ${esc(w.name)}
+            </td>
+
+            <td>
+              <b>
+                ${formatMinutes(w.work_minutes)}
+              </b>
+
+              ${
+                Number(w.work_minutes)>=3000
+                ? '<br>⚠️ Limite 50 h'
+                : ''
+              }
+            </td>
+
+            <td>
+              ${formatMinutes(w.pause_minutes)}
+            </td>
+
+            <td>
+              ${Number(w.days)||0}
+            </td>
+
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    // ===== TOTAL DU MOIS =====
+
+    html+=`
+      <br>
+      <h3>📊 Total du mois</h3>
+    `;
+
+    if(!monthly.length){
+
+      html+=`
+        <p>
+          Aucun employé pour ce mois.
+        </p>
+      `;
+
+    }else{
+
+      html+=`
+        <table>
+
+          <tr>
+            <th>Employé</th>
+            <th>Travail</th>
+            <th>Pause</th>
+            <th>Jours</th>
+            <th>Pointages</th>
+            <th>Sorties auto</th>
+          </tr>
+      `;
+
+      for(const m of monthly){
+
+        html+=`
+          <tr>
+
+            <td>
+              <b>${esc(m.name)}</b>
+
+              ${
+                m.active===false
+                ? '<br><small>Employé désactivé</small>'
+                : ''
+              }
+            </td>
+
+            <td>
+              <b>
+                ${formatMinutes(m.work_minutes)}
+              </b>
+            </td>
+
+            <td>
+              ${formatMinutes(m.pause_minutes)}
+            </td>
+
+            <td>
+              ${Number(m.days)||0}
+            </td>
+
+            <td>
+              ${Number(m.events)||0}
+            </td>
+
+            <td>
+              ${Number(m.automatic_exits)||0}
+            </td>
+
+          </tr>
+        `;
+      }
+
+      html+='</table>';
+    }
+
+
+    rep.innerHTML=html;
+
+
+  }catch(e){
+
+    console.error(e);
+
+    rep.innerHTML=
+      '<div class="err">'+
+      'Impossible de charger le rapport.'+
+      '</div>';
+  }
 }
 async function csv(){
   let r=await fetch('/api/export.csv?month='+month.value,{headers:{'x-admin-pin':admin}});
