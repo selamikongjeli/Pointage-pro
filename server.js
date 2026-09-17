@@ -2448,110 +2448,306 @@ app.get('/api/manager/report',managerAuth,async(req,res)=>{
 
 app.get('/api/export.csv',auth,async(req,res)=>{
 
-  const month=String(
-    req.query.month ||
-    new Date().toISOString().slice(0,7)
-  );
+  try{
 
-  const establishmentId=
-    String(
-      req.query.establishment_id || ''
-    ).trim();
+    const m=String(
+      req.query.month ||
+      new Date().toISOString().slice(0,7)
+    );
 
-  const start=month+'-01';
+    const establishmentId=
+      String(
+        req.query.establishment_id || ''
+      ).trim() || null;
 
-  const params=[start];
 
-  let establishmentFilter='';
+    const params=[m];
 
-  if(establishmentId){
-    params.push(establishmentId);
+    let establishmentFilter='';
 
-    establishmentFilter=`
-      AND s.establishment_id=$2
-    `;
-  }
+    if(establishmentId){
 
-  const rows=(await pool.query(`
-    SELECT
-      s.name,
-      s.code,
-      e.name AS establishment_name,
-      p.type,
-      p.time,
-      p.automatic,
-      p.auto_reason
+      params.push(establishmentId);
 
-    FROM punches p
+      establishmentFilter=`
+        AND s.establishment_id=$2
+      `;
+    }
 
-    JOIN staff s
-      ON s.id=p.staff_id
 
-    LEFT JOIN establishments e
-      ON e.id=s.establishment_id
+    // ===== DETAIL DES POINTAGES =====
 
-    WHERE
-      p.time >= $1::date
+    const rows=
+      (await pool.query(`
 
-      AND p.time <
-        ($1::date + interval '1 month')
+        SELECT
+          s.name,
+          s.code,
+          s.active,
+          e.name AS establishment_name,
+          p.type,
+          p.time,
+          p.automatic,
+          p.auto_reason
 
-      ${establishmentFilter}
+        FROM punches p
 
-    ORDER BY
-      e.name,
-      s.name,
-      p.time
-  `,params)).rows;
+        JOIN staff s
+          ON s.id=p.staff_id
 
-  const labels={
-    in:'Entrée',
-    pause_start:'Début pause',
-    pause_end:'Fin pause',
-    out:'Sortie'
-  };
+        LEFT JOIN establishments e
+          ON e.id=s.establishment_id
 
-  const lines=[
-    'Établissement;Employé;Code;Action;Date/heure;Sortie automatique;Raison'
-  ];
+        WHERE
+          (
+            p.time
+            AT TIME ZONE 'Europe/Brussels'
+          )::date
+          >= ($1 || '-01')::date
 
-  for(const r of rows){
+          AND
+          (
+            p.time
+            AT TIME ZONE 'Europe/Brussels'
+          )::date
+          <
+          (
+            ($1 || '-01')::date
+            + interval '1 month'
+          )
+
+          ${establishmentFilter}
+
+        ORDER BY
+          e.name,
+          s.name,
+          p.time
+
+      `,params)).rows;
+
+
+    // Utilise le même calcul que le rapport écran
+    const report=
+      await buildHoursReport(
+        m,
+        establishmentId
+      );
+
+
+    const actions={
+      in:'Entrée',
+      pause_start:'Début pause',
+      pause_end:'Fin pause',
+      out:'Sortie'
+    };
+
+
+    const reasons={
+      MAX_JOUR:'Limite 11 h',
+      MAX_SEMAINE:'Limite 50 h',
+      FERMETURE_ETABLISSEMENT:
+        'Fermeture établissement'
+    };
+
+
+    function cell(value){
+
+      return `"${String(value ?? '')
+        .replaceAll('"','""')}"`;
+    }
+
+
+    function minutesText(value){
+
+      const total=
+        Math.max(
+          0,
+          Number(value)||0
+        );
+
+      const h=Math.floor(total/60);
+
+      const min=Math.round(total%60);
+
+      return (
+        h+
+        ' h '+
+        String(min).padStart(2,'0')
+      );
+    }
+
+
+    function decimalHours(value){
+
+      return (
+        (Number(value)||0)/60
+      )
+      .toFixed(2)
+      .replace('.',',');
+    }
+
+
+    const lines=[];
+
+
+    // ===== SECTION 1 : DETAIL =====
 
     lines.push(
       [
-        r.establishment_name || 'Non attribué',
-        r.name,
-        r.code,
-        labels[r.type] || r.type,
-        new Date(r.time).toLocaleString(
-          'fr-BE',
-          {
-            timeZone:'Europe/Brussels'
-          }
-        ),
-        r.automatic ? 'Oui' : 'Non',
-        r.auto_reason || ''
+        'Établissement',
+        'Employé',
+        'Code',
+        'Action',
+        'Date/heure',
+        'Sortie automatique',
+        'Raison'
       ]
-      .map(v=>
-        `"${String(v).replaceAll('"','""')}"`
-      )
+      .map(cell)
       .join(';')
     );
+
+
+    for(const r of rows){
+
+      lines.push(
+        [
+          r.establishment_name ||
+            'Non attribué',
+
+          r.name,
+
+          r.code,
+
+          actions[r.type] ||
+            r.type,
+
+          new Date(r.time)
+            .toLocaleString(
+              'fr-BE',
+              {
+                timeZone:
+                  'Europe/Brussels'
+              }
+            ),
+
+          r.automatic
+            ? 'Oui'
+            : 'Non',
+
+          r.auto_reason
+            ? (
+                reasons[r.auto_reason] ||
+                r.auto_reason
+              )
+            : ''
+
+        ]
+        .map(cell)
+        .join(';')
+      );
+    }
+
+
+    // Ligne vide
+    lines.push('');
+
+
+    // ===== SECTION 2 : RECAPITULATIF =====
+
+    lines.push(
+      cell(
+        'RÉCAPITULATIF MENSUEL'
+      )
+    );
+
+
+    lines.push(
+      [
+        'Employé',
+        'Établissement',
+        'Code',
+        'Heures nettes',
+        'Heures décimales',
+        'Pauses',
+        'Jours travaillés',
+        'Pointages',
+        'Sorties automatiques',
+        'Statut'
+      ]
+      .map(cell)
+      .join(';')
+    );
+
+
+    for(const e of report.monthly || []){
+
+      lines.push(
+        [
+          e.name,
+
+          e.establishment_name ||
+            'Non attribué',
+
+          e.code,
+
+          minutesText(
+            e.work_minutes
+          ),
+
+          decimalHours(
+            e.work_minutes
+          ),
+
+          minutesText(
+            e.pause_minutes
+          ),
+
+          Number(e.days)||0,
+
+          Number(e.events)||0,
+
+          Number(
+            e.automatic_exits
+          )||0,
+
+          e.active===false
+            ? 'Désactivé'
+            : 'Actif'
+
+        ]
+        .map(cell)
+        .join(';')
+      );
+    }
+
+
+    res.setHeader(
+      'Content-Type',
+      'text/csv; charset=utf-8'
+    );
+
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="pointage-${m}.csv"`
+    );
+
+    res.send(
+      '\ufeff'+
+      lines.join('\n')
+    );
+
+
+  }catch(e){
+
+    console.error(
+      'EXPORT CSV',
+      e
+    );
+
+    res.status(500).json({
+      error:'EXPORT_ERROR'
+    });
   }
-
-  res.setHeader(
-    'Content-Type',
-    'text/csv; charset=utf-8'
-  );
-
-  res.setHeader(
-    'Content-Disposition',
-    `attachment; filename="pointage-${month}.csv"`
-  );
-
-  res.send(
-    '\ufeff'+lines.join('\n')
-  );
 });
 
 
