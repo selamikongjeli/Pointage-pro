@@ -1956,11 +1956,63 @@ function choose(x){
   chosen.textContent='Action : '+L[x];scan.classList.remove('hide');
 }
 function startScan(){
+
   scanbox.classList.remove('hide');
-  if(sc)return;
+
+  if(sc) return;
+
+  result.innerHTML=
+    '<div>📷 Placez le QR devant la caméra...</div>';
+
   sc=new Html5Qrcode('reader');
-  sc.start({facingMode:'environment'},{fps:10,qrbox:{width:240,height:240}},submit,()=>{}).catch(()=>{
-    result.innerHTML='<div class="err">Caméra indisponible : vérifiez HTTPS et l’autorisation caméra.</div>';
+
+  let detected=false;
+
+  sc.start(
+    {
+      facingMode:'environment'
+    },
+    {
+      fps:15
+    },
+
+    async(decodedText)=>{
+
+      if(detected) return;
+
+      detected=true;
+
+      const scanner=sc;
+      sc=null;
+
+      try{
+        await scanner.stop();
+      }catch(e){}
+
+      try{
+        await scanner.clear();
+      }catch(e){}
+
+      result.innerHTML=
+        '<div>✅ QR détecté — vérification en cours...</div>';
+
+      await submit(
+        String(decodedText).trim()
+      );
+    },
+
+    ()=>{}
+  )
+  .catch((e)=>{
+
+    console.error(e);
+
+    result.innerHTML=
+      '<div class="err">'+
+      'Impossible de démarrer le scanner.'+
+      '</div>';
+
+    sc=null;
   });
 }
 async function submit(tok){
