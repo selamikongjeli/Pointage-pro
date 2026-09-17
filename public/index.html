@@ -1888,10 +1888,61 @@ const j=await api(
   }
 }
 async function csv(){
-  let r=await fetch('/api/export.csv?month='+month.value,{headers:{'x-admin-pin':admin}});
-  let b=await r.blob(),a=document.createElement('a');
-  a.href=URL.createObjectURL(b);a.download='pointage-'+month.value+'.csv';a.click();
-  URL.revokeObjectURL(a.href);
+
+  const selectedMonth=
+    document.getElementById('month').value;
+
+  const selectedEstablishment=
+    document.getElementById('reportEstablishment').value;
+
+  let url=
+    '/api/export.csv?month='+
+    encodeURIComponent(selectedMonth);
+
+  if(selectedEstablishment){
+    url+=
+      '&establishment_id='+
+      encodeURIComponent(selectedEstablishment);
+  }
+
+  try{
+
+    const r=await fetch(
+      url,
+      {
+        headers:{
+          'x-admin-pin':admin
+        }
+      }
+    );
+
+    if(!r.ok){
+      alert('Impossible d’exporter le rapport.');
+      return;
+    }
+
+    const b=await r.blob();
+
+    const a=document.createElement('a');
+
+    a.href=URL.createObjectURL(b);
+
+    a.download=
+      'pointage-'+
+      selectedMonth+
+      (selectedEstablishment ? '-etablissement' : '')+
+      '.csv';
+
+    a.click();
+
+    URL.revokeObjectURL(a.href);
+
+  }catch(e){
+
+    console.error(e);
+
+    alert('Impossible d’exporter le rapport.');
+  }
 }
 async function elogin(){
   try{
