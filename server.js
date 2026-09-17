@@ -1,10 +1,25 @@
 
-const express=require('express'),crypto=require('crypto'),path=require('path');
+const express=require('express'),crypto=require('crypto'),path=require('path'),cors=require('cors');
 const {Pool}=require('pg');
 const app=express(),PORT=process.env.PORT||3000,SECRET=process.env.POINTAGE_SECRET||'change-me';
 const pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.NODE_ENV==='production'?{rejectUnauthorized:false}:false});
-app.use(express.json());app.use(express.static(path.join(__dirname,'public')));
-const hp=(p,s)=>crypto.scryptSync(String(p),s,32).toString('hex');
+app.use(cors({
+  origin:[
+    'http://localhost',
+    'https://localhost',
+    'capacitor://localhost',
+    'https://pointage-pro-juk7.onrender.com'
+  ],
+  methods:['GET','POST','PATCH','DELETE','OPTIONS'],
+  allowedHeaders:[
+    'Content-Type',
+    'Authorization',
+    'x-admin-pin'
+  ]
+}));
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname,'public')));const hp=(p,s)=>crypto.scryptSync(String(p),s,32).toString('hex');
 const mk=p=>{let s=crypto.randomBytes(16).toString('hex');return{salt:s,hash:hp(p,s)}};
 const ok=(p,r)=>!!(r && r.pin_salt && r.pin_hash) && hp(p,r.pin_salt)===r.pin_hash;
 const sig=p=>crypto.createHmac('sha256',SECRET).update(p).digest('hex');
