@@ -2446,7 +2446,113 @@ app.get('/api/manager/report',managerAuth,async(req,res)=>{
 });
 
 
-app.get('/api/export.csv',auth,async(req,res)=>{let m=String(req.query.month||new Date().toISOString().slice(0,7)),st=m+'-01';let rows=(await pool.query("select s.name,s.code,p.type,p.time from punches p join staff s on s.id=p.staff_id where p.time >= $1::date and p.time < ($1::date + interval '1 month') order by s.name,p.time",[st])).rows,L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'},lines=['Employé;Code;Action;Date/heure'];for(let r of rows)lines.push([r.name,r.code,L[r.type],new Date(r.time).toLocaleString('fr-BE')].map(v=>`"${String(v).replaceAll('"','""')}"`).join(';'));res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="pointage-${m}.csv"`);res.send('\ufeff'+lines.join('\n'))});
+app.get('/api/export.csv',auth,async(req,res)=>{
+
+  const month=String(
+    req.query.month ||
+    new Date().toISOString().slice(0,7)
+  );
+
+  const establishmentId=
+    String(
+      req.query.establishment_id || ''
+    ).trim();
+
+  const start=month+'-01';
+
+  const params=[start];
+
+  let establishmentFilter='';
+
+  if(establishmentId){
+    params.push(establishmentId);
+
+    establishmentFilter=`
+      AND s.establishment_id=$2
+    `;
+  }
+
+  const rows=(await pool.query(`
+    SELECT
+      s.name,
+      s.code,
+      e.name AS establishment_name,
+      p.type,
+      p.time,
+      p.automatic,
+      p.auto_reason
+
+    FROM punches p
+
+    JOIN staff s
+      ON s.id=p.staff_id
+
+    LEFT JOIN establishments e
+      ON e.id=s.establishment_id
+
+    WHERE
+      p.time >= $1::date
+
+      AND p.time <
+        ($1::date + interval '1 month')
+
+      ${establishmentFilter}
+
+    ORDER BY
+      e.name,
+      s.name,
+      p.time
+  `,params)).rows;
+
+  const labels={
+    in:'Entrée',
+    pause_start:'Début pause',
+    pause_end:'Fin pause',
+    out:'Sortie'
+  };
+
+  const lines=[
+    'Établissement;Employé;Code;Action;Date/heure;Sortie automatique;Raison'
+  ];
+
+  for(const r of rows){
+
+    lines.push(
+      [
+        r.establishment_name || 'Non attribué',
+        r.name,
+        r.code,
+        labels[r.type] || r.type,
+        new Date(r.time).toLocaleString(
+          'fr-BE',
+          {
+            timeZone:'Europe/Brussels'
+          }
+        ),
+        r.automatic ? 'Oui' : 'Non',
+        r.auto_reason || ''
+      ]
+      .map(v=>
+        `"${String(v).replaceAll('"','""')}"`
+      )
+      .join(';')
+    );
+  }
+
+  res.setHeader(
+    'Content-Type',
+    'text/csv; charset=utf-8'
+  );
+
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="pointage-${month}.csv"`
+  );
+
+  res.send(
+    '\ufeff'+lines.join('\n')
+  );
+});
 
 
 init()
