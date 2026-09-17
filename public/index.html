@@ -227,11 +227,27 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
   <div id="inactiveStaff"></div>
 </div>
 <div class="card">
-<h3>Rapport mensuel</h3>
-<input id="month" type="month">
-<button onclick="report()">Afficher</button>
-<button class="x" onclick="csv()">Exporter CSV</button>
-<div id="rep"></div>
+
+  <h3>📊 Rapport mensuel</h3>
+
+  <input id="month" type="month">
+
+  <select id="reportEstablishment">
+    <option value="">
+      Tous les établissements
+    </option>
+  </select>
+
+  <button onclick="report()">
+    Afficher
+  </button>
+
+  <button class="x" onclick="csv()">
+    Exporter CSV
+  </button>
+
+  <div id="rep"></div>
+
 </div>
 <div class="card"><h3>Historique</h3><button class="x" onclick="history()">Actualiser</button><div id="hist"></div></div>
 </div>
@@ -996,6 +1012,32 @@ if(select){
     select.value=currentValue;
   }
 }
+    const reportSelect=
+  document.getElementById('reportEstablishment');
+
+if(reportSelect){
+
+  const currentReportValue=
+    reportSelect.value;
+
+  reportSelect.innerHTML=
+    '<option value="">Tous les établissements</option>'+
+    list
+      .filter(e=>e.active!==false)
+      .map(e=>`
+        <option value="${e.id}">
+          ${esc(e.name)}
+        </option>
+      `)
+      .join('');
+
+  if(
+    [...reportSelect.options]
+      .some(o=>o.value===currentReportValue)
+  ){
+    reportSelect.value=currentReportValue;
+  }
+}
     if(!list.length){
       box.innerHTML='<p>Aucun établissement créé.</p>';
       return;
@@ -1495,6 +1537,8 @@ async function report(){
 
   const selectedMonth=
     document.getElementById('month').value;
+  const selectedEstablishment=
+  document.getElementById('reportEstablishment').value;
 
   if(!selectedMonth){
     alert('Choisissez un mois.');
@@ -1505,15 +1549,24 @@ async function report(){
 
   try{
 
-    const j=await api(
-      '/api/report?month='+
-      encodeURIComponent(selectedMonth),
-      {
-        headers:{
-          'x-admin-pin':admin
-        }
-      }
-    );
+    const reportUrl=
+  '/api/report?month='+
+  encodeURIComponent(selectedMonth)+
+  (
+    selectedEstablishment
+      ? '&establishment_id='+
+        encodeURIComponent(selectedEstablishment)
+      : ''
+  );
+
+const j=await api(
+  reportUrl,
+  {
+    headers:{
+      'x-admin-pin':admin
+    }
+  }
+);
 
     const daily=(j.daily||[]).filter(
       d=>String(d.date||'').startsWith(
@@ -1591,6 +1644,7 @@ async function report(){
           <tr>
             <th>Date</th>
             <th>Employé</th>
+            <th>Établissement</th>
             <th>Entrée</th>
             <th>Sortie</th>
             <th>Travail</th>
@@ -1635,7 +1689,9 @@ async function report(){
               <br>
               <small>${esc(d.code||'')}</small>
             </td>
-
+<td>
+  ${esc(d.establishment_name || 'Non attribué')}
+</td>
             <td>
               ${reportTime(d.first_in)}
             </td>
@@ -1688,6 +1744,7 @@ async function report(){
           <tr>
             <th>Semaine</th>
             <th>Employé</th>
+            <th>Établissement</th>
             <th>Travail</th>
             <th>Pause</th>
             <th>Jours</th>
@@ -1708,7 +1765,9 @@ async function report(){
             <td>
               ${esc(w.name)}
             </td>
-
+<td>
+  ${esc(w.establishment_name || 'Non attribué')}
+</td>
             <td>
               <b>
                 ${formatMinutes(w.work_minutes)}
@@ -1759,6 +1818,7 @@ async function report(){
 
           <tr>
             <th>Employé</th>
+            <th>Établissement</th>
             <th>Travail</th>
             <th>Pause</th>
             <th>Jours</th>
@@ -1774,7 +1834,9 @@ async function report(){
 
             <td>
               <b>${esc(m.name)}</b>
-
+<td>
+  ${esc(m.establishment_name || 'Non attribué')}
+</td>
               ${
                 m.active===false
                 ? '<br><small>Employé désactivé</small>'
