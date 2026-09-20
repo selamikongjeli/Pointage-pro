@@ -1970,16 +1970,17 @@ WHERE
 
       if(!days[shift.day]){
 
-        days[shift.day]={
-          workMs:0,
-          pauseMs:0,
-          events:0,
-          firstIn:null,
-          lastOut:null,
-          open:false,
-          automaticExits:0,
-          reasons:new Set()
-        };
+       days[shift.day]={
+  workMs:0,
+  pauseMs:0,
+  events:0,
+  firstIn:null,
+  lastOut:null,
+  open:false,
+  automaticExits:0,
+  reasons:new Set(),
+  timeline:[]
+};
       }
 
 
@@ -2019,7 +2020,7 @@ WHERE
       for(const reason of shift.reasons){
         d.reasons.add(reason);
       }
-
+d.timeline.push(...shift.timeline);
 
       shift=null;
     }
@@ -2039,18 +2040,26 @@ WHERE
 
 
         shift={
-          day:reportDayKey(time),
-          firstIn:time,
-          lastOut:null,
-          activeStart:time,
-          pauseStart:null,
-          workMs:0,
-          pauseMs:0,
-          events:1,
-          open:true,
-          automatic:false,
-          reasons:new Set()
-        };
+  day:reportDayKey(time),
+  firstIn:time,
+  lastOut:null,
+  activeStart:time,
+  pauseStart:null,
+  workMs:0,
+  pauseMs:0,
+  events:1,
+  open:true,
+  automatic:false,
+  reasons:new Set(),
+
+  timeline:[
+    {
+      type:'in',
+      time:time.toISOString(),
+      automatic:false
+    }
+  ]
+};
 
         continue;
       }
@@ -2059,7 +2068,11 @@ WHERE
       if(!shift){
         continue;
       }
-
+shift.timeline.push({
+  type:event.type,
+  time:time.toISOString(),
+  automatic:!!event.automatic
+});
 
       shift.events++;
 
@@ -2206,8 +2219,10 @@ establishment_name:
         automatic_exits:
           d.automaticExits,
 
-        auto_reasons:
-          Array.from(d.reasons)
+            auto_reasons:
+  Array.from(d.reasons),
+
+timeline:d.timeline
       });
     }
   }
