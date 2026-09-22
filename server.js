@@ -139,6 +139,18 @@ ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 1;
       time timestamptz not null default now()
     );
 
+    CREATE TABLE IF NOT EXISTS staff_schedules(
+      id uuid primary key,
+      staff_id uuid not null references staff(id) on delete cascade,
+      establishment_id uuid not null references establishments(id) on delete cascade,
+      work_date date not null,
+      planned_start time not null,
+      planned_end time not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      UNIQUE(staff_id,work_date)
+    );
+
     ALTER TABLE punches
     ADD COLUMN IF NOT EXISTS establishment_id uuid
     REFERENCES establishments(id) ON DELETE SET NULL;
@@ -167,6 +179,12 @@ ADD COLUMN IF NOT EXISTS auto_reason text;
 
     CREATE INDEX IF NOT EXISTS idx_punch_establishment
     ON punches(establishment_id,time);
+
+    CREATE INDEX IF NOT EXISTS idx_staff_schedules_establishment_date
+    ON staff_schedules(establishment_id,work_date);
+
+    CREATE INDEX IF NOT EXISTS idx_staff_schedules_staff_date
+    ON staff_schedules(staff_id,work_date);
   `);
 }
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
@@ -753,6 +771,124 @@ app.delete('/api/manager/staff/:id',managerAuth,async(req,res)=>{
     staff:q.rows[0]
   });
 });
+
+// ===== HORAIRES PREVUS RESPONSABLE =====
+
+function validWorkDate(value){
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value||''));
+}
+
+function validClock(value){
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value||''));
+}
+
+app.get('/api/manager/schedules',managerAuth,async(req,res)=>{
+  const month=String(req.query.month||new Date().toISOString().slice(0,7));
+
+  if(!/^\d{4}-\d{2}$/.test(month)){
+    return res.status(400).json({error:'BAD_MONTH'});
+  }
+
+  const q=await pool.query(`
+    SELECT
+      ss.id,
+      ss.staff_id,
+      s.name,
+      s.code,
+      ss.work_date::text AS date,
+      to_char(ss.planned_start,'HH24:MI') AS planned_start,
+      to_char(ss.planned_end,'HH24:MI') AS planned_end
+    FROM staff_schedules ss
+    JOIN staff s ON s.id=ss.staff_id
+    WHERE ss.establishment_id=$1
+      AND s.establishment_id=$1
+      AND ss.work_date >= ($2 || '-01')::date
+      AND ss.work_date < (($2 || '-01')::date + interval '1 month')
+    ORDER BY ss.work_date,s.name
+  `,[req.manager.establishment_id,month]);
+
+  res.json(q.rows);
+});
+
+app.post('/api/manager/schedules',managerAuth,async(req,res)=>{
+  const staffId=String(req.body.staff_id||'').trim();
+  const date=String(req.body.date||'').trim();
+  const plannedStart=String(req.body.planned_start||'').trim();
+  const plannedEnd=String(req.body.planned_end||'').trim();
+
+  if(!staffId || !validWorkDate(date) || !validClock(plannedStart) || !validClock(plannedEnd)){
+    return res.status(400).json({error:'INVALID_SCHEDULE'});
+  }
+
+  if(plannedEnd<=plannedStart){
+    return res.status(400).json({error:'BAD_SCHEDULE_RANGE'});
+  }
+
+  const employee=await pool.query(`
+    SELECT id
+    FROM staff
+    WHERE id=$1
+      AND establishment_id=$2
+      AND active=true
+    LIMIT 1
+  `,[staffId,req.manager.establishment_id]);
+
+  if(!employee.rows[0]){
+    return res.status(404).json({error:'STAFF_NOT_FOUND'});
+  }
+
+  const q=await pool.query(`
+    INSERT INTO staff_schedules(
+      id,staff_id,establishment_id,work_date,planned_start,planned_end
+    )
+    VALUES($1,$2,$3,$4,$5,$6)
+    ON CONFLICT(staff_id,work_date)
+    DO UPDATE SET
+      establishment_id=EXCLUDED.establishment_id,
+      planned_start=EXCLUDED.planned_start,
+      planned_end=EXCLUDED.planned_end,
+      updated_at=now()
+    RETURNING
+      id,
+      staff_id,
+      work_date::text AS date,
+      to_char(planned_start,'HH24:MI') AS planned_start,
+      to_char(planned_end,'HH24:MI') AS planned_end
+  `,[
+    crypto.randomUUID(),
+    staffId,
+    req.manager.establishment_id,
+    date,
+    plannedStart,
+    plannedEnd
+  ]);
+
+  res.json({ok:true,schedule:q.rows[0]});
+});
+
+app.delete('/api/manager/schedules/:staffId/:date',managerAuth,async(req,res)=>{
+  const staffId=String(req.params.staffId||'').trim();
+  const date=String(req.params.date||'').trim();
+
+  if(!staffId || !validWorkDate(date)){
+    return res.status(400).json({error:'INVALID_SCHEDULE'});
+  }
+
+  const q=await pool.query(`
+    DELETE FROM staff_schedules
+    WHERE staff_id=$1
+      AND work_date=$2::date
+      AND establishment_id=$3
+    RETURNING id
+  `,[staffId,date,req.manager.establishment_id]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({error:'SCHEDULE_NOT_FOUND'});
+  }
+
+  res.json({ok:true});
+});
+
 app.get('/api/status',async(req,res)=>{let r=await settings();res.json({adminSetup:!!r.admin_pin_hash,company:r.company})});
 app.post('/api/setup',async(req,res)=>{let r=await settings();if(r.admin_pin_hash)return res.status(409).json({error:'ALREADY'});let pin=String(req.body.pin||'');if(pin.length<4)return res.status(400).json({error:'PIN'});let p=mk(pin);await pool.query('update settings set company=$1,admin_pin_salt=$2,admin_pin_hash=$3 where id=1',[req.body.company||'Mon entreprise',p.salt,p.hash]);res.json({ok:true})});
 app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.floor(Date.now()/1000)%60)}));
@@ -2228,6 +2364,88 @@ timeline:d.timeline
   }
 
 
+  // ===== HORAIRES PREVUS DU MOIS =====
+
+  const scheduleParams=[month];
+  let scheduleEstablishmentFilter='';
+
+  if(establishmentId){
+    scheduleParams.push(establishmentId);
+    scheduleEstablishmentFilter=`
+      AND ss.establishment_id=$2
+    `;
+  }
+
+  const scheduleRows=(await pool.query(`
+    SELECT
+      ss.staff_id,
+      ss.work_date::text AS date,
+      to_char(ss.planned_start,'HH24:MI') AS planned_start,
+      to_char(ss.planned_end,'HH24:MI') AS planned_end,
+      ((ss.work_date + ss.planned_start) AT TIME ZONE 'Europe/Brussels') AS planned_start_at,
+      ((ss.work_date + ss.planned_end) AT TIME ZONE 'Europe/Brussels') AS planned_end_at
+    FROM staff_schedules ss
+    JOIN staff s ON s.id=ss.staff_id
+    WHERE ss.work_date >= ($1 || '-01')::date
+      AND ss.work_date < (($1 || '-01')::date + interval '1 month')
+      ${scheduleEstablishmentFilter}
+    ORDER BY ss.work_date,ss.staff_id
+  `,scheduleParams)).rows;
+
+  const scheduleByKey=new Map();
+
+  for(const schedule of scheduleRows){
+    scheduleByKey.set(
+      schedule.staff_id+'|'+schedule.date,
+      schedule
+    );
+  }
+
+  function addScheduleComparison(day,schedule){
+    day.scheduled=!!schedule;
+    day.planned_start=schedule ? schedule.planned_start : null;
+    day.planned_end=schedule ? schedule.planned_end : null;
+    day.late_minutes=null;
+    day.overtime_minutes=null;
+    day.early_leave_minutes=null;
+    day.absent=false;
+
+    if(!schedule){
+      return;
+    }
+
+    const plannedStartAt=new Date(schedule.planned_start_at);
+    const plannedEndAt=new Date(schedule.planned_end_at);
+
+    if(day.first_in){
+      day.late_minutes=Math.max(
+        0,
+        Math.round((new Date(day.first_in)-plannedStartAt)/60000)
+      );
+    }
+
+    if(day.last_out){
+      const actualOut=new Date(day.last_out);
+
+      day.overtime_minutes=Math.max(
+        0,
+        Math.round((actualOut-plannedEndAt)/60000)
+      );
+
+      day.early_leave_minutes=Math.max(
+        0,
+        Math.round((plannedEndAt-actualOut)/60000)
+      );
+    }
+  }
+
+  for(const day of daily){
+    addScheduleComparison(
+      day,
+      scheduleByKey.get(day.staff_id+'|'+day.date) || null
+    );
+  }
+
   // ===== PAR SEMAINE =====
 
   const weeklyMap={};
@@ -2380,6 +2598,55 @@ establishment_name:
       events:m.events
     }));
 
+
+  // Ajoute au détail les jours planifiés sans aucun pointage.
+  // Ils n'augmentent pas les totaux de jours/heures travaillés.
+  const dailyKeys=new Set(
+    daily.map(d=>d.staff_id+'|'+d.date)
+  );
+
+  const staffById=new Map(
+    staffRows.map(person=>[person.id,person])
+  );
+
+  for(const schedule of scheduleRows){
+    const key=schedule.staff_id+'|'+schedule.date;
+
+    if(dailyKeys.has(key)){
+      continue;
+    }
+
+    const person=staffById.get(schedule.staff_id);
+
+    if(!person){
+      continue;
+    }
+
+    daily.push({
+      staff_id:person.id,
+      name:person.name,
+      code:person.code,
+      establishment_id:person.establishment_id,
+      establishment_name:person.establishment_name || 'Non attribué',
+      date:schedule.date,
+      work_minutes:0,
+      pause_minutes:0,
+      events:0,
+      first_in:null,
+      last_out:null,
+      open:false,
+      automatic_exits:0,
+      auto_reasons:[],
+      timeline:[],
+      scheduled:true,
+      planned_start:schedule.planned_start,
+      planned_end:schedule.planned_end,
+      late_minutes:null,
+      overtime_minutes:null,
+      early_leave_minutes:null,
+      absent:true
+    });
+  }
 
   daily.sort(
     (a,b)=>
