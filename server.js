@@ -2173,6 +2173,11 @@ WHERE
     const events=
       eventsByStaff[person.id] || [];
 
+    // Règles nécessaires aussi pour réparer un ancien service
+    // resté ouvert dans les données historiques.
+    const personRules=
+      await establishmentRules(person);
+
     const days={};
 
     let shift=null;
@@ -2361,36 +2366,146 @@ shift.timeline.push({
     }
 
 
-    // Service encore en cours aujourd'hui
+    // Service encore ouvert à la fin des événements.
+    // S'il date d'un jour précédent, on le clôture ici également.
+    // Cette sécurité garantit que le rapport ne reste jamais bloqué sur
+    // « Service en cours » pour un ancien pointage oublié.
     if(shift){
 
       const now=new Date();
+      const isToday=
+        reportDayKey(now)===shift.day;
 
-      if(
-        reportDayKey(now)===
-        shift.day
-      ){
+      if(isToday){
 
         if(shift.activeStart){
-
           shift.workMs+=
             now-shift.activeStart;
-
           shift.activeStart=now;
         }
 
-
         if(shift.pauseStart){
-
           shift.pauseMs+=
             now-shift.pauseStart;
-
           shift.pauseStart=now;
         }
+
+        shift.open=true;
+
+      }else{
+
+        const firstIn=shift.firstIn;
+        const maxDayMinutes=
+          Number(
+            personRules &&
+            personRules.max_day_span_minutes
+              ? personRules.max_day_span_minutes
+              : 660
+          );
+
+        const dayLimit=new Date(
+          firstIn.getTime()+
+          maxDayMinutes*60000
+        );
+
+        let closingLimit=dayLimit;
+
+        try{
+          const rawClosing=
+            await closingDate(
+              firstIn,
+              personRules && personRules.closing_time
+                ? personRules.closing_time
+                : '23:30'
+            );
+
+          closingLimit=new Date(
+            Math.max(
+              rawClosing.getTime(),
+              firstIn.getTime()
+            )
+          );
+        }catch(e){
+          console.error(
+            'STALE SHIFT CLOSING TIME',
+            person.id,
+            e
+          );
+        }
+
+        const candidates=[
+          {time:dayLimit,reason:'MAX_JOUR'},
+          {time:closingLimit,reason:'FERMETURE_ETABLISSEMENT'}
+        ].sort((a,b)=>a.time-b.time);
+
+        const automaticExit=candidates[0];
+        const exitTime=new Date(
+          Math.min(
+            automaticExit.time.getTime(),
+            now.getTime()
+          )
+        );
+
+        if(shift.activeStart){
+          shift.workMs+=
+            Math.max(0,exitTime-shift.activeStart);
+          shift.activeStart=null;
+        }
+
+        if(shift.pauseStart){
+          shift.pauseMs+=
+            Math.max(0,exitTime-shift.pauseStart);
+          shift.pauseStart=null;
+        }
+
+        shift.lastOut=exitTime;
+        shift.open=false;
+        shift.automatic=true;
+        shift.reasons.add(automaticExit.reason);
+        shift.timeline.push({
+          type:'out',
+          time:exitTime.toISOString(),
+          automatic:true
+        });
+        shift.events++;
+
+        // On répare aussi la base pour que les prochains rapports
+        // et exports retrouvent directement cette sortie automatique.
+        try{
+          const latest=await pool.query(`
+            SELECT type,time
+            FROM punches
+            WHERE staff_id=$1
+            ORDER BY time DESC
+            LIMIT 1
+          `,[person.id]);
+
+          if(
+            latest.rows[0] &&
+            latest.rows[0].type!=='out' &&
+            new Date(latest.rows[0].time).getTime()===firstIn.getTime()
+          ){
+            await pool.query(`
+              INSERT INTO punches(
+                id,staff_id,establishment_id,type,time,automatic,auto_reason
+              )
+              VALUES($1,$2,$3,'out',$4,true,$5)
+            `,[
+              crypto.randomUUID(),
+              person.id,
+              person.establishment_id,
+              exitTime,
+              automaticExit.reason
+            ]);
+          }
+        }catch(e){
+          console.error(
+            'STALE SHIFT DB REPAIR',
+            person.id,
+            e
+          );
+        }
       }
-
-
-      shift.open=true;
 
       saveShift();
     }
