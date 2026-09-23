@@ -1456,12 +1456,18 @@ async function enforceAutomaticExit(s){
   const shiftEvents=shiftEventsQ.rows;
 
 
-  // Première entrée de la journée
-  const firstIn=
+  // Première entrée de la journée.
+  // Sécurité pour les anciennes données : si elle est introuvable,
+  // on utilise le début du service actuel au lieu de laisser le service ouvert.
+  const firstInFound=
     await firstInOfDay(
       s.id,
       shiftStart
     );
+
+  const firstIn=
+    firstInFound || shiftStart;
+
 
   const rawDayLimit=
     new Date(
@@ -1469,7 +1475,6 @@ async function enforceAutomaticExit(s){
       Number(rules.max_day_span_minutes)*60000
     );
 
-  // Sécurité : jamais avant le début du service actuel
   const dayLimit=
     new Date(
       Math.max(
@@ -1479,7 +1484,6 @@ async function enforceAutomaticExit(s){
     );
 
 
-  // Heure de fermeture de l'établissement
   const rawClosing=
     await closingDate(
       shiftStart,
@@ -1496,67 +1500,16 @@ async function enforceAutomaticExit(s){
 
 
   const now=new Date();
-
-  const hardUntil=new Date(
-    Math.min(
-      now.getTime(),
-      dayLimit.getTime(),
-      closingLimit.getTime()
-    )
-  );
-
-
-  // Heures déjà faites dans la semaine
-  // avant le service actuel
-  const beforeShift=
-    new Date(
-      shiftStart.getTime()-1
-    );
-
-  const previousWeekEvents=
-    await weekEvents(
-      s.id,
-      shiftStart,
-      beforeShift
-    );
-
-  const previousWeekMs=
-    workedMs(previousWeekEvents);
-
-  const weeklyLimitMs=
-    Number(rules.weekly_max_minutes)*60000;
-
-  const remainingWeekMs=
-    weeklyLimitMs-previousWeekMs;
-
-
-  let weeklyLimitTime=null;
-
-  if(remainingWeekMs<=0){
-
-    weeklyLimitTime=shiftStart;
-
-  }else{
-
-    weeklyLimitTime=
-      timeWhenWorkReached(
-        shiftEvents,
-        hardUntil,
-        remainingWeekMs
-      );
-  }
-
-
   const candidates=[];
 
 
+  // Ces deux limites suffisent déjà à fermer un ancien service oublié.
   if(dayLimit<=now){
     candidates.push({
       time:dayLimit,
       reason:'MAX_JOUR'
     });
   }
-
 
   if(closingLimit<=now){
     candidates.push({
@@ -1566,14 +1519,68 @@ async function enforceAutomaticExit(s){
   }
 
 
-  if(
-    weeklyLimitTime &&
-    weeklyLimitTime<=now
-  ){
-    candidates.push({
-      time:weeklyLimitTime,
-      reason:'MAX_SEMAINE'
-    });
+  // La limite hebdomadaire reste prise en compte, mais une erreur de calcul
+  // ne doit jamais empêcher la fermeture d'un ancien service déjà dépassé.
+  try{
+
+    const hardUntil=new Date(
+      Math.min(
+        now.getTime(),
+        dayLimit.getTime(),
+        closingLimit.getTime()
+      )
+    );
+
+    const beforeShift=
+      new Date(
+        shiftStart.getTime()-1
+      );
+
+    const previousWeekEvents=
+      await weekEvents(
+        s.id,
+        shiftStart,
+        beforeShift
+      );
+
+    const previousWeekMs=
+      workedMs(previousWeekEvents);
+
+    const weeklyLimitMs=
+      Number(rules.weekly_max_minutes)*60000;
+
+    const remainingWeekMs=
+      weeklyLimitMs-previousWeekMs;
+
+    let weeklyLimitTime=null;
+
+    if(remainingWeekMs<=0){
+      weeklyLimitTime=shiftStart;
+    }else{
+      weeklyLimitTime=
+        timeWhenWorkReached(
+          shiftEvents,
+          hardUntil,
+          remainingWeekMs
+        );
+    }
+
+    if(
+      weeklyLimitTime &&
+      weeklyLimitTime<=now
+    ){
+      candidates.push({
+        time:weeklyLimitTime,
+        reason:'MAX_SEMAINE'
+      });
+    }
+
+  }catch(e){
+    console.error(
+      'WEEK LIMIT AUTO EXIT',
+      s.id,
+      e
+    );
   }
 
 
@@ -1589,8 +1596,7 @@ async function enforceAutomaticExit(s){
   const exit=candidates[0];
 
 
-  // Vérification supplémentaire pour éviter
-  // une double sortie automatique
+  // Vérification supplémentaire pour éviter une double sortie automatique.
   const check=await pool.query(`
     SELECT type
     FROM punches
