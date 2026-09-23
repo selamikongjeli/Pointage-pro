@@ -18,7 +18,7 @@ app.use(cors({
   ]
 }));
 
-app.use(express.json());
+app.use(express.json({limit:'8mb'}));
 app.use(express.static(path.join(__dirname,'public')));const hp=(p,s)=>crypto.scryptSync(String(p),s,32).toString('hex');
 const mk=p=>{let s=crypto.randomBytes(16).toString('hex');return{salt:s,hash:hp(p,s)}};
 const ok=(p,r)=>!!(r && r.pin_salt && r.pin_hash) && hp(p,r.pin_salt)===r.pin_hash;
@@ -122,6 +122,13 @@ async function init(){
     ALTER TABLE establishments
     ADD COLUMN IF NOT EXISTS country text;
 
+    -- Paramètres déplacements / construction. Le tarif est défini par établissement.
+    ALTER TABLE establishments
+    ADD COLUMN IF NOT EXISTS mileage_rate numeric(10,3) NOT NULL DEFAULT 0;
+
+    ALTER TABLE establishments
+    ADD COLUMN IF NOT EXISTS travel_measurement text NOT NULL DEFAULT 'both';
+
     CREATE TABLE IF NOT EXISTS managers(
       id uuid primary key,
       establishment_id uuid not null references establishments(id) on delete cascade,
@@ -150,6 +157,11 @@ ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 1;
 
     ALTER TABLE staff
     ADD COLUMN IF NOT EXISTS national_number text;
+
+    -- onsite = QR + rayon GPS, mobile = pointage libre avec GPS,
+    -- construction = heures chantier + trajets kilométriques séparés.
+    ALTER TABLE staff
+    ADD COLUMN IF NOT EXISTS punch_mode text NOT NULL DEFAULT 'onsite';
 
     CREATE TABLE IF NOT EXISTS punches(
       id uuid primary key,
@@ -190,6 +202,69 @@ ADD COLUMN IF NOT EXISTS automatic boolean NOT NULL DEFAULT false;
 
 ALTER TABLE punches
 ADD COLUMN IF NOT EXISTS auto_reason text;
+
+ALTER TABLE punches
+ADD COLUMN IF NOT EXISTS latitude double precision;
+
+ALTER TABLE punches
+ADD COLUMN IF NOT EXISTS longitude double precision;
+
+ALTER TABLE punches
+ADD COLUMN IF NOT EXISTS accuracy double precision;
+
+ALTER TABLE punches
+ADD COLUMN IF NOT EXISTS work_site_name text;
+
+    CREATE TABLE IF NOT EXISTS travel_sessions(
+      id uuid primary key,
+      staff_id uuid not null references staff(id) on delete cascade,
+      establishment_id uuid references establishments(id) on delete set null,
+      trip_type text not null,
+      start_time timestamptz not null default now(),
+      end_time timestamptz,
+      start_latitude double precision,
+      start_longitude double precision,
+      start_accuracy double precision,
+      end_latitude double precision,
+      end_longitude double precision,
+      end_accuracy double precision,
+      start_odometer_km numeric(12,1),
+      end_odometer_km numeric(12,1),
+      odometer_km numeric(12,1),
+      gps_km numeric(12,3),
+      approved_km numeric(12,1),
+      mileage_rate numeric(10,3) NOT NULL DEFAULT 0,
+      status text NOT NULL DEFAULT 'open',
+      start_photo bytea,
+      start_photo_mime text,
+      end_photo bytea,
+      end_photo_mime text,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    CREATE TABLE IF NOT EXISTS travel_gps_points(
+      id bigserial primary key,
+      trip_id uuid not null references travel_sessions(id) on delete cascade,
+      captured_at timestamptz not null,
+      latitude double precision not null,
+      longitude double precision not null,
+      accuracy double precision
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_travel_staff_time
+    ON travel_sessions(staff_id,start_time);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_travel_open_staff
+    ON travel_sessions(staff_id)
+    WHERE status='open';
+
+    CREATE INDEX IF NOT EXISTS idx_travel_establishment_time
+    ON travel_sessions(establishment_id,start_time);
+
+    CREATE INDEX IF NOT EXISTS idx_travel_points_trip
+    ON travel_gps_points(trip_id,captured_at);
+
     CREATE INDEX IF NOT EXISTS idx_punch
     ON punches(staff_id,time);
 
@@ -213,6 +288,24 @@ ADD COLUMN IF NOT EXISTS auto_reason text;
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
 async function auth(req,res,next){let r=await settings();if(!r.admin_pin_hash)return res.status(428).json({error:'ADMIN_NOT_SETUP'});if(!r.admin_pin_salt || hp(req.headers['x-admin-pin']||'',r.admin_pin_salt)!==r.admin_pin_hash)return res.status(401).json({error:'BAD_ADMIN_PIN'});next()}
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
+
+function normalizePunchMode(value){
+  const v=String(value||'onsite').trim().toLowerCase();
+  return ['onsite','mobile','construction'].includes(v) ? v : '';
+}
+
+function punchModeLabel(value){
+  return value==='mobile' ? 'Déplacement' : value==='construction' ? 'Construction' : 'Sur place';
+}
+
+function cleanPhotoBase64(value){
+  if(!value) return null;
+  const raw=String(value).replace(/^data:[^;]+;base64,/, '');
+  if(!/^[A-Za-z0-9+/=\r\n]+$/.test(raw)) return null;
+  const b=Buffer.from(raw,'base64');
+  if(!b.length || b.length>2500000) return null;
+  return b;
+}
 
 
 // ===== NUMERO NATIONAL / NISS-BIS =====
@@ -282,13 +375,17 @@ function readEstablishmentDetails(body){
   const postalCode=String(body.postal_code||'').trim();
   const city=String(body.city||'').trim();
   const country=String(body.country||'').trim();
+  const mileageRate=body.mileage_rate==='' || body.mileage_rate==null
+    ? 0 : Number(body.mileage_rate);
+  const travelMeasurement=['both','odometer','gps'].includes(String(body.travel_measurement||'both'))
+    ? String(body.travel_measurement||'both') : 'both';
   // On conserve « address » pour les anciens écrans et anciens établissements.
   const fullAddress=[
     street,
     [postalCode,city].filter(Boolean).join(' '),
     country
   ].filter(Boolean).join(', ') || String(body.address||'').trim();
-  return {name,vatNumber,street,postalCode,city,country,fullAddress};
+  return {name,vatNumber,street,postalCode,city,country,fullAddress,mileageRate,travelMeasurement};
 }
 
 app.post('/api/admin/establishments',auth,async(req,res)=>{
@@ -297,6 +394,9 @@ app.post('/api/admin/establishments',auth,async(req,res)=>{
   if(!d.name) return res.status(400).json({error:'NAME_REQUIRED'});
   if(d.vatNumber && !/^BE\d{10}$/.test(d.vatNumber)){
     return res.status(400).json({error:'BAD_VAT'});
+  }
+  if(!Number.isFinite(d.mileageRate) || d.mileageRate<0 || d.mileageRate>10){
+    return res.status(400).json({error:'BAD_MILEAGE_RATE'});
   }
 
   const latitude=req.body.latitude==='' || req.body.latitude==null
@@ -318,13 +418,13 @@ app.post('/api/admin/establishments',auth,async(req,res)=>{
   const q=await pool.query(`
     INSERT INTO establishments
       (id,name,address,vat_number,street_address,postal_code,city,country,
-       latitude,longitude,radius_m)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       mileage_rate,travel_measurement,latitude,longitude,radius_m)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
     RETURNING *
   `,[
     crypto.randomUUID(),d.name,d.fullAddress,d.vatNumber||null,
     d.street||null,d.postalCode||null,d.city||null,d.country||null,
-    latitude,longitude,radius
+    d.mileageRate,d.travelMeasurement,latitude,longitude,radius
   ]);
 
   res.json(q.rows[0]);
@@ -339,6 +439,9 @@ app.patch('/api/admin/establishments/:id/details',auth,async(req,res)=>{
   if(d.vatNumber && !/^BE\d{10}$/.test(d.vatNumber)){
     return res.status(400).json({error:'BAD_VAT'});
   }
+  if(!Number.isFinite(d.mileageRate) || d.mileageRate<0 || d.mileageRate>10){
+    return res.status(400).json({error:'BAD_MILEAGE_RATE'});
+  }
   if(!d.street || !d.postalCode || !d.city || !d.country){
     return res.status(400).json({error:'ADDRESS_REQUIRED'});
   }
@@ -346,12 +449,13 @@ app.patch('/api/admin/establishments/:id/details',auth,async(req,res)=>{
   const q=await pool.query(`
     UPDATE establishments
     SET name=$1,address=$2,vat_number=$3,
-        street_address=$4,postal_code=$5,city=$6,country=$7
-    WHERE id=$8
+        street_address=$4,postal_code=$5,city=$6,country=$7,
+        mileage_rate=$8,travel_measurement=$9
+    WHERE id=$10
     RETURNING *
   `,[
     d.name,d.fullAddress,d.vatNumber||null,d.street,d.postalCode,
-    d.city,d.country,req.params.id
+    d.city,d.country,d.mileageRate,d.travelMeasurement,req.params.id
   ]);
 
   if(!q.rows[0]){
@@ -629,7 +733,7 @@ app.get('/api/manager/me',managerAuth,(req,res)=>{
 app.get('/api/manager/staff/inactive',managerAuth,async(req,res)=>{
 
   const q=await pool.query(`
-    SELECT id,name,code,role,active,national_number
+    SELECT id,name,code,role,active,national_number,punch_mode
     FROM staff
     WHERE establishment_id=$1
       AND active=false
@@ -648,7 +752,7 @@ app.patch('/api/manager/staff/:id/reactivate',managerAuth,async(req,res)=>{
     WHERE id=$1
       AND establishment_id=$2
       AND active=false
-    RETURNING id,name,code,role,active,national_number
+    RETURNING id,name,code,role,active,national_number,punch_mode
   `,[
     req.params.id,
     req.manager.establishment_id
@@ -717,7 +821,7 @@ app.patch('/api/admin/managers/:id/reset-pin',auth,async(req,res)=>{
 
 app.get('/api/manager/staff',managerAuth,async(req,res)=>{
   const q=await pool.query(`
-    SELECT id,name,code,role,active,national_number
+    SELECT id,name,code,role,active,national_number,punch_mode
     FROM staff
     WHERE establishment_id=$1
     AND active=true
@@ -733,8 +837,9 @@ app.post('/api/manager/staff',managerAuth,async(req,res)=>{
   const role=String(req.body.role||'Employé').trim();
   const pin=String(req.body.pin||'');
   const nationalNumber=normalizeNationalNumber(req.body.national_number);
+  const punchMode=normalizePunchMode(req.body.punch_mode);
 
-  if(!name || !code || pin.length<4){
+  if(!name || !code || pin.length<4 || !punchMode){
     return res.status(400).json({error:'INVALID'});
   }
 
@@ -747,8 +852,8 @@ app.post('/api/manager/staff',managerAuth,async(req,res)=>{
   try{
     await pool.query(`
       INSERT INTO staff
-        (id,name,code,role,pin_salt,pin_hash,establishment_id,national_number)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+        (id,name,code,role,pin_salt,pin_hash,establishment_id,national_number,punch_mode)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
     `,[
       crypto.randomUUID(),
       name,
@@ -757,7 +862,8 @@ app.post('/api/manager/staff',managerAuth,async(req,res)=>{
       p.salt,
       p.hash,
       req.manager.establishment_id,
-      nationalNumber || null
+      nationalNumber || null,
+      punchMode
     ]);
 
     res.json({ok:true});
@@ -778,9 +884,27 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
   const code=String(req.body.code||'').trim();
   const role=String(req.body.role||'Employé').trim();
   const pin=String(req.body.pin||'');
-  const nationalNumber=normalizeNationalNumber(req.body.national_number);
 
-  if(!name || !code){
+  const currentQ=await pool.query(`
+    SELECT national_number,punch_mode
+    FROM staff
+    WHERE id=$1 AND establishment_id=$2
+    LIMIT 1
+  `,[id,req.manager.establishment_id]);
+
+  if(!currentQ.rows[0]){
+    return res.status(404).json({error:'NOT_FOUND'});
+  }
+
+  const hasNationalNumber=Object.prototype.hasOwnProperty.call(req.body,'national_number');
+  const nationalNumber=hasNationalNumber
+    ? normalizeNationalNumber(req.body.national_number)
+    : String(currentQ.rows[0].national_number||'');
+  const punchMode=normalizePunchMode(
+    req.body.punch_mode || currentQ.rows[0].punch_mode || 'onsite'
+  );
+
+  if(!name || !code || !punchMode){
     return res.status(400).json({error:'INVALID'});
   }
 
@@ -798,11 +922,11 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 
       const q=await pool.query(`
         UPDATE staff
-        SET name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5,national_number=$6
-        WHERE id=$7 AND establishment_id=$8
+        SET name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5,national_number=$6,punch_mode=$7
+        WHERE id=$8 AND establishment_id=$9
         RETURNING id
       `,[
-        name,code,role,p.salt,p.hash,nationalNumber || null,
+        name,code,role,p.salt,p.hash,nationalNumber || null,punchMode,
         id,req.manager.establishment_id
       ]);
 
@@ -814,11 +938,11 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 
       const q=await pool.query(`
         UPDATE staff
-        SET name=$1,code=$2,role=$3,national_number=$4
-        WHERE id=$5 AND establishment_id=$6
+        SET name=$1,code=$2,role=$3,national_number=$4,punch_mode=$5
+        WHERE id=$6 AND establishment_id=$7
         RETURNING id
       `,[
-        name,code,role,nationalNumber || null,
+        name,code,role,nationalNumber || null,punchMode,
         id,req.manager.establishment_id
       ]);
 
@@ -1020,7 +1144,7 @@ app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.flo
 app.get('/api/staff/inactive',auth,async(req,res)=>{
 
   const q=await pool.query(`
-    SELECT id,name,code,role,active,national_number
+    SELECT id,name,code,role,active,national_number,punch_mode
     FROM staff
     WHERE active=false
     ORDER BY name
@@ -1037,7 +1161,7 @@ app.patch('/api/staff/:id/reactivate',auth,async(req,res)=>{
     SET active=true
     WHERE id=$1
       AND active=false
-    RETURNING id,name,code,role,active,national_number
+    RETURNING id,name,code,role,active,national_number,punch_mode
   `,[req.params.id]);
 
   if(!q.rows[0]){
@@ -1055,7 +1179,7 @@ app.patch('/api/staff/:id/reactivate',auth,async(req,res)=>{
   res.json(
     (
       await pool.query(`
-        SELECT id,name,code,role,active,national_number
+        SELECT id,name,code,role,active,national_number,punch_mode
         FROM staff
         WHERE active=true
         ORDER BY name
@@ -1070,10 +1194,11 @@ app.post('/api/staff',auth,async(req,res)=>{
   const role=String(req.body.role||'Employé').trim();
   const pin=String(req.body.pin||'');
   const nationalNumber=normalizeNationalNumber(req.body.national_number);
+  const punchMode=normalizePunchMode(req.body.punch_mode);
   const establishmentId=
     String(req.body.establishment_id||'').trim();
 
-  if(!name || !code || pin.length<4){
+  if(!name || !code || pin.length<4 || !punchMode){
     return res.status(400).json({
       error:'INVALID'
     });
@@ -1116,9 +1241,10 @@ app.post('/api/staff',auth,async(req,res)=>{
         pin_salt,
         pin_hash,
         establishment_id,
-        national_number
+        national_number,
+        punch_mode
       )
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
       RETURNING
         id,
         name,
@@ -1126,6 +1252,7 @@ app.post('/api/staff',auth,async(req,res)=>{
         role,
         establishment_id,
         national_number,
+        punch_mode,
         active
     `,[
       crypto.randomUUID(),
@@ -1135,7 +1262,8 @@ app.post('/api/staff',auth,async(req,res)=>{
       p.salt,
       p.hash,
       establishmentId,
-      nationalNumber || null
+      nationalNumber || null,
+      punchMode
     ]);
 
     res.json({
@@ -1162,9 +1290,17 @@ app.patch('/api/staff/:id',auth,async(req,res)=>{
   let code=String(req.body.code||'').trim();
   let role=String(req.body.role||'Employé').trim();
   let pin=String(req.body.pin||'');
-  let nationalNumber=normalizeNationalNumber(req.body.national_number);
 
-  if(!name||!code) return res.status(400).json({error:'INVALID'});
+  const currentQ=await pool.query('SELECT national_number,punch_mode FROM staff WHERE id=$1 LIMIT 1',[id]);
+  if(!currentQ.rows[0]) return res.status(404).json({error:'NOT_FOUND'});
+
+  const hasNationalNumber=Object.prototype.hasOwnProperty.call(req.body,'national_number');
+  let nationalNumber=hasNationalNumber
+    ? normalizeNationalNumber(req.body.national_number)
+    : String(currentQ.rows[0].national_number||'');
+  let punchMode=normalizePunchMode(req.body.punch_mode || currentQ.rows[0].punch_mode || 'onsite');
+
+  if(!name||!code||!punchMode) return res.status(400).json({error:'INVALID'});
 
   if(nationalNumber && !validNationalNumber(nationalNumber)){
     return res.status(400).json({error:'BAD_NISS'});
@@ -1175,13 +1311,13 @@ app.patch('/api/staff/:id',auth,async(req,res)=>{
       if(pin.length<4) return res.status(400).json({error:'PIN'});
       let p=mk(pin);
       await pool.query(
-        'update staff set name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5,national_number=$6 where id=$7',
-        [name,code,role,p.salt,p.hash,nationalNumber || null,id]
+        'update staff set name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5,national_number=$6,punch_mode=$7 where id=$8',
+        [name,code,role,p.salt,p.hash,nationalNumber || null,punchMode,id]
       );
     }else{
       await pool.query(
-        'update staff set name=$1,code=$2,role=$3,national_number=$4 where id=$5',
-        [name,code,role,nationalNumber || null,id]
+        'update staff set name=$1,code=$2,role=$3,national_number=$4,punch_mode=$5 where id=$6',
+        [name,code,role,nationalNumber || null,punchMode,id]
       );
     }
     res.json({ok:true});
@@ -1250,11 +1386,37 @@ app.post('/api/login',async(req,res)=>{
     });
   }
 
+  const est=s.establishment_id
+    ? (await pool.query(`
+        SELECT id,name,mileage_rate,travel_measurement
+        FROM establishments
+        WHERE id=$1
+        LIMIT 1
+      `,[s.establishment_id])).rows[0]
+    : null;
+
+  const openTrip=s.punch_mode==='construction'
+    ? (await pool.query(`
+        SELECT id,trip_type,start_time,start_odometer_km
+        FROM travel_sessions
+        WHERE staff_id=$1 AND status='open'
+        ORDER BY start_time DESC
+        LIMIT 1
+      `,[s.id])).rows[0] || null
+    : null;
+
   res.json({
     ok:true,
     staff:{
       name:s.name,
-      role:s.role
+      role:s.role,
+      punch_mode:s.punch_mode || 'onsite',
+      punch_mode_label:punchModeLabel(s.punch_mode || 'onsite'),
+      establishment_id:s.establishment_id || null,
+      establishment_name:est ? est.name : '',
+      mileage_rate:est ? Number(est.mileage_rate||0) : 0,
+      travel_measurement:est ? est.travel_measurement : 'both',
+      open_trip:openTrip
     }
   });
 });
@@ -1739,151 +1901,88 @@ function distanceMeters(lat1,lon1,lat2,lon2){
 
 app.post('/api/punch',async(req,res)=>{
 
-  const s=await staff(
-    String(req.body.code||'')
-  );
+  const s=await staff(String(req.body.code||''));
 
-  if(
-    !s ||
-    !ok(req.body.pin||'',s)
-  ){
-    return res.status(401).json({
-      error:'BAD_LOGIN'
-    });
+  if(!s || !ok(req.body.pin||'',s)){
+    return res.status(401).json({error:'BAD_LOGIN'});
   }
 
+  const action=String(req.body.action||'');
 
-  const action=req.body.action;
-
-  if(
-    ![
-      'in',
-      'pause_start',
-      'pause_end',
-      'out'
-    ].includes(action)
-  ){
-    return res.status(400).json({
-      error:'BAD_ACTION'
-    });
+  if(!['in','pause_start','pause_end','out'].includes(action)){
+    return res.status(400).json({error:'BAD_ACTION'});
   }
 
+  const punchMode=normalizePunchMode(s.punch_mode) || 'onsite';
 
-  // ===== QR PERMANENT =====
+  // La position est conservée pour tous les modes. En mode sur place elle sert
+  // aussi à contrôler le rayon de l'établissement.
+  const latitude=Number(req.body.latitude);
+  const longitude=Number(req.body.longitude);
+  const accuracy=Number(req.body.accuracy);
 
-  const qrEstablishmentId=
-    readPermanentQR(req.body.token);
-
-  if(!qrEstablishmentId){
-    return res.status(400).json({
-      error:'BAD_QR'
-    });
+  if(!Number.isFinite(latitude) || !Number.isFinite(longitude)){
+    return res.status(400).json({error:'GPS_REQUIRED'});
   }
 
-
-  if(
-    !s.establishment_id ||
-    String(s.establishment_id)!==
-    String(qrEstablishmentId)
-  ){
-    return res.status(403).json({
-      error:'WRONG_ESTABLISHMENT'
-    });
+  if(Number.isFinite(accuracy) && accuracy>100){
+    return res.status(400).json({error:'GPS_INACCURATE',accuracy});
   }
 
+  let establishmentId=s.establishment_id || null;
+  let distance=null;
+  let radius=null;
 
-  // ===== GPS EMPLOYE =====
+  if(punchMode==='onsite'){
+    const qrEstablishmentId=readPermanentQR(req.body.token);
 
-  const latitude=
-    Number(req.body.latitude);
+    if(!qrEstablishmentId){
+      return res.status(400).json({error:'BAD_QR'});
+    }
 
-  const longitude=
-    Number(req.body.longitude);
+    if(!s.establishment_id || String(s.establishment_id)!==String(qrEstablishmentId)){
+      return res.status(403).json({error:'WRONG_ESTABLISHMENT'});
+    }
 
-  const accuracy=
-    Number(req.body.accuracy);
+    establishmentId=qrEstablishmentId;
 
+    const estQ=await pool.query(`
+      SELECT id,latitude,longitude,radius_m
+      FROM establishments
+      WHERE id=$1 AND active=true
+      LIMIT 1
+    `,[qrEstablishmentId]);
 
-  if(
-    !Number.isFinite(latitude) ||
-    !Number.isFinite(longitude)
-  ){
-    return res.status(400).json({
-      error:'GPS_REQUIRED'
-    });
-  }
+    const establishment=estQ.rows[0];
 
+    if(!establishment){
+      return res.status(404).json({error:'ESTABLISHMENT_NOT_FOUND'});
+    }
 
-  if(
-    Number.isFinite(accuracy) &&
-    accuracy>100
-  ){
-    return res.status(400).json({
-      error:'GPS_INACCURATE',
-      accuracy
-    });
-  }
+    if(establishment.latitude==null || establishment.longitude==null){
+      return res.status(409).json({error:'GPS_NOT_CONFIGURED'});
+    }
 
-
-  const estQ=await pool.query(`
-    SELECT
-      id,
-      latitude,
-      longitude,
-      radius_m
-    FROM establishments
-    WHERE id=$1
-      AND active=true
-    LIMIT 1
-  `,[qrEstablishmentId]);
-
-
-  const establishment=
-    estQ.rows[0];
-
-
-  if(!establishment){
-    return res.status(404).json({
-      error:'ESTABLISHMENT_NOT_FOUND'
-    });
-  }
-
-
-  if(
-    establishment.latitude==null ||
-    establishment.longitude==null
-  ){
-    return res.status(409).json({
-      error:'GPS_NOT_CONFIGURED'
-    });
-  }
-
-
-  const distance=
-    distanceMeters(
+    distance=distanceMeters(
       latitude,
       longitude,
       Number(establishment.latitude),
       Number(establishment.longitude)
     );
 
+    radius=Number(establishment.radius_m || 30);
 
-  const radius=
-    Number(establishment.radius_m || 30);
-
-
-  if(distance>radius){
-    return res.status(403).json({
-      error:'TOO_FAR',
-      distance:Math.round(distance),
-      radius
-    });
+    if(distance>radius){
+      return res.status(403).json({
+        error:'TOO_FAR',
+        distance:Math.round(distance),
+        radius
+      });
+    }
   }
 
-
-  // Vérifie les sorties automatiques
+  // Vérifie les sorties automatiques avant chaque nouveau pointage.
   await enforceAutomaticExit(s);
-
 
   const lastQ=await pool.query(`
     SELECT *
@@ -1895,127 +1994,412 @@ app.post('/api/punch',async(req,res)=>{
 
   const last=lastQ.rows[0];
 
-
   if(!next(last,action)){
-
-    if(
-      last &&
-      last.type==='out' &&
-      last.automatic
-    ){
+    if(last && last.type==='out' && last.automatic){
       return res.status(409).json({
         error:'AUTO_CLOSED',
         reason:last.auto_reason,
         time:last.time
       });
     }
-
-    return res.status(409).json({
-      error:'INVALID_SEQUENCE'
-    });
+    return res.status(409).json({error:'INVALID_SEQUENCE'});
   }
 
-
-  const rules=
-    await establishmentRules(s);
-
+  const rules=await establishmentRules(s);
 
   if(action==='in' && rules){
-
     const now=new Date();
 
+    // L'heure de fermeture concerne le personnel qui pointe physiquement
+    // dans l'établissement. Les commerciaux et chantiers peuvent travailler
+    // hors des heures d'ouverture.
+    if(punchMode==='onsite'){
+      const localTime=await pool.query(`
+        SELECT (
+          $1::timestamptz AT TIME ZONE 'Europe/Brussels'
+        )::time >= $2::time AS closed
+      `,[now,rules.closing_time]);
 
-    const localTime=await pool.query(`
-      SELECT
-        (
-          $1::timestamptz
-          AT TIME ZONE 'Europe/Brussels'
-        )::time >= $2::time
-        AS closed
-    `,[now,rules.closing_time]);
-
-
-    if(localTime.rows[0].closed){
-      return res.status(409).json({
-        error:'ESTABLISHMENT_CLOSED'
-      });
-    }
-
-
-    const firstIn=
-      await firstInOfDay(
-        s.id,
-        now
-      );
-
-
-    if(firstIn){
-
-      const dayDeadline=
-        new Date(
-          firstIn.getTime()+
-          Number(
-            rules.max_day_span_minutes
-          )*60000
-        );
-
-
-      if(now>=dayDeadline){
-        return res.status(409).json({
-          error:'DAY_LIMIT'
-        });
+      if(localTime.rows[0].closed){
+        return res.status(409).json({error:'ESTABLISHMENT_CLOSED'});
       }
     }
 
+    const firstIn=await firstInOfDay(s.id,now);
 
-    const weekMs=
-      await weeklyWorkedMs(
-        s.id,
-        now,
-        now
+    if(firstIn){
+      const dayDeadline=new Date(
+        firstIn.getTime()+Number(rules.max_day_span_minutes)*60000
       );
+      if(now>=dayDeadline){
+        return res.status(409).json({error:'DAY_LIMIT'});
+      }
+    }
 
-
-    const weekLimitMs=
-      Number(
-        rules.weekly_max_minutes
-      )*60000;
-
+    const weekMs=await weeklyWorkedMs(s.id,now,now);
+    const weekLimitMs=Number(rules.weekly_max_minutes)*60000;
 
     if(weekMs>=weekLimitMs){
-      return res.status(409).json({
-        error:'WEEK_LIMIT'
-      });
+      return res.status(409).json({error:'WEEK_LIMIT'});
     }
   }
 
+  const workSiteName=punchMode==='construction'
+    ? String(req.body.work_site_name||'').trim().slice(0,160)
+    : null;
 
   const q=await pool.query(`
     INSERT INTO punches(
-      id,
-      staff_id,
-      establishment_id,
-      type
+      id,staff_id,establishment_id,type,
+      latitude,longitude,accuracy,work_site_name
     )
-    VALUES($1,$2,$3,$4)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)
     RETURNING time
   `,[
     crypto.randomUUID(),
     s.id,
-    qrEstablishmentId,
-    action
+    establishmentId,
+    action,
+    latitude,
+    longitude,
+    Number.isFinite(accuracy) ? accuracy : null,
+    workSiteName || null
   ]);
-
 
   res.json({
     ok:true,
     type:action,
     time:q.rows[0].time,
     name:s.name,
-    distance:Math.round(distance),
+    punch_mode:punchMode,
+    work_site_name:workSiteName || '',
+    distance:distance==null ? null : Math.round(distance),
     radius
   });
 });
+
+
+// ===== TRAJETS / KILOMETRES (MODE CONSTRUCTION) =====
+
+function validTripType(value){
+  return ['depot_to_site','site_to_site','site_to_depot'].includes(String(value||''));
+}
+
+function validCoordinate(lat,lon){
+  return Number.isFinite(lat) && Number.isFinite(lon) &&
+    lat>=-90 && lat<=90 && lon>=-180 && lon<=180;
+}
+
+async function establishmentTravelSettings(establishmentId){
+  if(!establishmentId) return null;
+  const q=await pool.query(`
+    SELECT id,name,latitude,longitude,radius_m,mileage_rate,travel_measurement
+    FROM establishments
+    WHERE id=$1 AND active=true
+    LIMIT 1
+  `,[establishmentId]);
+  return q.rows[0] || null;
+}
+
+app.post('/api/travel/status',async(req,res)=>{
+  const s=await staff(String(req.body.code||''));
+  if(!s || !ok(req.body.pin||'',s)){
+    return res.status(401).json({error:'BAD_LOGIN'});
+  }
+  if((s.punch_mode||'onsite')!=='construction'){
+    return res.status(403).json({error:'NOT_CONSTRUCTION_MODE'});
+  }
+
+  const q=await pool.query(`
+    SELECT id,trip_type,start_time,start_odometer_km,status
+    FROM travel_sessions
+    WHERE staff_id=$1 AND status='open'
+    ORDER BY start_time DESC
+    LIMIT 1
+  `,[s.id]);
+
+  res.json({ok:true,open_trip:q.rows[0]||null});
+});
+
+app.post('/api/travel/start',async(req,res)=>{
+  const s=await staff(String(req.body.code||''));
+  if(!s || !ok(req.body.pin||'',s)){
+    return res.status(401).json({error:'BAD_LOGIN'});
+  }
+  if((s.punch_mode||'onsite')!=='construction'){
+    return res.status(403).json({error:'NOT_CONSTRUCTION_MODE'});
+  }
+
+  const tripType=String(req.body.trip_type||'');
+  if(!validTripType(tripType)){
+    return res.status(400).json({error:'BAD_TRIP_TYPE'});
+  }
+
+  const startOdo=Number(req.body.start_odometer_km);
+  if(!Number.isFinite(startOdo) || startOdo<0 || startOdo>5000000){
+    return res.status(400).json({error:'BAD_ODOMETER'});
+  }
+
+  const photo=cleanPhotoBase64(req.body.start_photo_base64);
+  if(!photo){
+    return res.status(400).json({error:'START_PHOTO_REQUIRED'});
+  }
+
+  const latitude=Number(req.body.latitude);
+  const longitude=Number(req.body.longitude);
+  const accuracy=Number(req.body.accuracy);
+
+  if(!validCoordinate(latitude,longitude)){
+    return res.status(400).json({error:'GPS_REQUIRED'});
+  }
+  if(Number.isFinite(accuracy) && accuracy>100){
+    return res.status(400).json({error:'GPS_INACCURATE',accuracy});
+  }
+
+  const settings=await establishmentTravelSettings(s.establishment_id);
+  if(!settings){
+    return res.status(404).json({error:'ESTABLISHMENT_NOT_FOUND'});
+  }
+
+  if(tripType==='depot_to_site'){
+    if(settings.latitude==null || settings.longitude==null){
+      return res.status(409).json({error:'DEPOT_GPS_NOT_CONFIGURED'});
+    }
+    const distance=distanceMeters(
+      latitude,longitude,
+      Number(settings.latitude),Number(settings.longitude)
+    );
+    if(distance>Number(settings.radius_m||30)){
+      return res.status(403).json({
+        error:'NOT_AT_DEPOT',
+        distance:Math.round(distance),
+        radius:Number(settings.radius_m||30)
+      });
+    }
+  }
+
+  const open=await pool.query(`
+    SELECT id FROM travel_sessions
+    WHERE staff_id=$1 AND status='open'
+    LIMIT 1
+  `,[s.id]);
+  if(open.rows[0]){
+    return res.status(409).json({error:'TRIP_ALREADY_OPEN',trip_id:open.rows[0].id});
+  }
+
+  const id=crypto.randomUUID();
+  const q=await pool.query(`
+    INSERT INTO travel_sessions(
+      id,staff_id,establishment_id,trip_type,
+      start_latitude,start_longitude,start_accuracy,
+      start_odometer_km,mileage_rate,start_photo,start_photo_mime
+    )
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    RETURNING id,trip_type,start_time,start_odometer_km,mileage_rate,status
+  `,[
+    id,s.id,s.establishment_id,tripType,
+    latitude,longitude,Number.isFinite(accuracy)?accuracy:null,
+    startOdo,Number(settings.mileage_rate||0),photo,
+    String(req.body.start_photo_mime||'image/jpeg').slice(0,80)
+  ]);
+
+  res.json({ok:true,trip:q.rows[0]});
+});
+
+app.post('/api/travel/end',async(req,res)=>{
+  const s=await staff(String(req.body.code||''));
+  if(!s || !ok(req.body.pin||'',s)){
+    return res.status(401).json({error:'BAD_LOGIN'});
+  }
+  if((s.punch_mode||'onsite')!=='construction'){
+    return res.status(403).json({error:'NOT_CONSTRUCTION_MODE'});
+  }
+
+  const tripId=String(req.body.trip_id||'').trim();
+  const tripQ=await pool.query(`
+    SELECT * FROM travel_sessions
+    WHERE id=$1 AND staff_id=$2 AND status='open'
+    LIMIT 1
+  `,[tripId,s.id]);
+  const trip=tripQ.rows[0];
+  if(!trip){
+    return res.status(404).json({error:'OPEN_TRIP_NOT_FOUND'});
+  }
+
+  const endOdo=Number(req.body.end_odometer_km);
+  const startOdo=Number(trip.start_odometer_km);
+  if(!Number.isFinite(endOdo) || endOdo<startOdo || endOdo>5000000){
+    return res.status(400).json({error:'BAD_ODOMETER'});
+  }
+
+  const photo=cleanPhotoBase64(req.body.end_photo_base64);
+  if(!photo){
+    return res.status(400).json({error:'END_PHOTO_REQUIRED'});
+  }
+
+  const latitude=Number(req.body.latitude);
+  const longitude=Number(req.body.longitude);
+  const accuracy=Number(req.body.accuracy);
+  if(!validCoordinate(latitude,longitude)){
+    return res.status(400).json({error:'GPS_REQUIRED'});
+  }
+  if(Number.isFinite(accuracy) && accuracy>100){
+    return res.status(400).json({error:'GPS_INACCURATE',accuracy});
+  }
+
+  const settings=await establishmentTravelSettings(s.establishment_id);
+  if(!settings){
+    return res.status(404).json({error:'ESTABLISHMENT_NOT_FOUND'});
+  }
+
+  if(trip.trip_type==='site_to_depot'){
+    if(settings.latitude==null || settings.longitude==null){
+      return res.status(409).json({error:'DEPOT_GPS_NOT_CONFIGURED'});
+    }
+    const distance=distanceMeters(
+      latitude,longitude,
+      Number(settings.latitude),Number(settings.longitude)
+    );
+    if(distance>Number(settings.radius_m||30)){
+      return res.status(403).json({
+        error:'NOT_AT_DEPOT',
+        distance:Math.round(distance),
+        radius:Number(settings.radius_m||30)
+      });
+    }
+  }
+
+  const gpsKm=Number(req.body.gps_km||0);
+  if(!Number.isFinite(gpsKm) || gpsKm<0 || gpsKm>5000){
+    return res.status(400).json({error:'BAD_GPS_DISTANCE'});
+  }
+
+  const points=Array.isArray(req.body.gps_points) ? req.body.gps_points : [];
+  if(points.length>5000){
+    return res.status(400).json({error:'TOO_MANY_GPS_POINTS'});
+  }
+
+  const odometerKm=Number((endOdo-startOdo).toFixed(1));
+  const client=await pool.connect();
+
+  try{
+    await client.query('BEGIN');
+
+    const updated=await client.query(`
+      UPDATE travel_sessions
+      SET end_time=now(),
+          end_latitude=$1,end_longitude=$2,end_accuracy=$3,
+          end_odometer_km=$4,odometer_km=$5,gps_km=$6,
+          end_photo=$7,end_photo_mime=$8,status='pending',updated_at=now()
+      WHERE id=$9 AND staff_id=$10 AND status='open'
+      RETURNING id,trip_type,start_time,end_time,start_odometer_km,end_odometer_km,
+                odometer_km,gps_km,mileage_rate,status
+    `,[
+      latitude,longitude,Number.isFinite(accuracy)?accuracy:null,
+      endOdo,odometerKm,gpsKm,photo,
+      String(req.body.end_photo_mime||'image/jpeg').slice(0,80),
+      tripId,s.id
+    ]);
+
+    for(const point of points){
+      const lat=Number(point.latitude);
+      const lon=Number(point.longitude);
+      const acc=Number(point.accuracy);
+      const t=new Date(point.time || point.captured_at || Date.now());
+      if(!validCoordinate(lat,lon) || Number.isNaN(t.getTime())) continue;
+      await client.query(`
+        INSERT INTO travel_gps_points(trip_id,captured_at,latitude,longitude,accuracy)
+        VALUES($1,$2,$3,$4,$5)
+      `,[tripId,t,lat,lon,Number.isFinite(acc)?acc:null]);
+    }
+
+    await client.query('COMMIT');
+    res.json({ok:true,trip:updated.rows[0]});
+  }catch(e){
+    await client.query('ROLLBACK');
+    console.error(e);
+    res.status(500).json({error:'SERVER_ERROR'});
+  }finally{
+    client.release();
+  }
+});
+
+app.get('/api/manager/travel',managerAuth,async(req,res)=>{
+  const month=String(req.query.month||new Date().toISOString().slice(0,7));
+  if(!/^\d{4}-\d{2}$/.test(month)){
+    return res.status(400).json({error:'BAD_MONTH'});
+  }
+
+  const q=await pool.query(`
+    SELECT
+      t.id,t.trip_type,t.start_time,t.end_time,
+      t.start_odometer_km,t.end_odometer_km,t.odometer_km,t.gps_km,
+      t.approved_km,t.mileage_rate,t.status,
+      s.id AS staff_id,s.name,s.code
+    FROM travel_sessions t
+    JOIN staff s ON s.id=t.staff_id
+    WHERE t.establishment_id=$1
+      AND (t.start_time AT TIME ZONE 'Europe/Brussels')::date >= ($2||'-01')::date
+      AND (t.start_time AT TIME ZONE 'Europe/Brussels')::date < (($2||'-01')::date + interval '1 month')
+    ORDER BY t.start_time DESC
+  `,[req.manager.establishment_id,month]);
+
+  res.json(q.rows.map(row=>({
+    ...row,
+    odometer_km:row.odometer_km==null?null:Number(row.odometer_km),
+    gps_km:row.gps_km==null?null:Number(row.gps_km),
+    approved_km:row.approved_km==null?null:Number(row.approved_km),
+    mileage_rate:Number(row.mileage_rate||0),
+    amount_eur:Number(((row.approved_km==null?row.odometer_km:row.approved_km)||0)*Number(row.mileage_rate||0)).toFixed(2)
+  })));
+});
+
+app.patch('/api/manager/travel/:id/approve',managerAuth,async(req,res)=>{
+  const approvedKm=Number(req.body.approved_km);
+  if(!Number.isFinite(approvedKm) || approvedKm<0 || approvedKm>5000){
+    return res.status(400).json({error:'BAD_KM'});
+  }
+
+  const q=await pool.query(`
+    UPDATE travel_sessions
+    SET approved_km=$1,status='approved',updated_at=now()
+    WHERE id=$2 AND establishment_id=$3 AND status IN ('pending','approved')
+    RETURNING id,approved_km,mileage_rate,status
+  `,[approvedKm,req.params.id,req.manager.establishment_id]);
+
+  if(!q.rows[0]) return res.status(404).json({error:'TRIP_NOT_FOUND'});
+  res.json({ok:true,trip:q.rows[0]});
+});
+
+app.patch('/api/manager/travel/:id/reject',managerAuth,async(req,res)=>{
+  const q=await pool.query(`
+    UPDATE travel_sessions
+    SET status='rejected',updated_at=now()
+    WHERE id=$1 AND establishment_id=$2 AND status IN ('pending','approved')
+    RETURNING id,status
+  `,[req.params.id,req.manager.establishment_id]);
+  if(!q.rows[0]) return res.status(404).json({error:'TRIP_NOT_FOUND'});
+  res.json({ok:true,trip:q.rows[0]});
+});
+
+app.get('/api/manager/travel/:id/photo/:which',managerAuth,async(req,res)=>{
+  const which=req.params.which==='start' ? 'start' : req.params.which==='end' ? 'end' : '';
+  if(!which) return res.status(400).end();
+
+  const q=await pool.query(`
+    SELECT start_photo,start_photo_mime,end_photo,end_photo_mime
+    FROM travel_sessions
+    WHERE id=$1 AND establishment_id=$2
+    LIMIT 1
+  `,[req.params.id,req.manager.establishment_id]);
+  if(!q.rows[0]) return res.status(404).end();
+
+  const data=which==='start' ? q.rows[0].start_photo : q.rows[0].end_photo;
+  const mime=which==='start' ? q.rows[0].start_photo_mime : q.rows[0].end_photo_mime;
+  if(!data) return res.status(404).end();
+  res.type(mime||'image/jpeg').send(data);
+});
+
 function next(last, a) {
   if (!last) return a === 'in';
 
@@ -2170,7 +2554,11 @@ async function buildHoursReport(month,establishmentId=null){
         p.type,
         p.time,
         p.automatic,
-        p.auto_reason
+        p.auto_reason,
+        p.latitude,
+        p.longitude,
+        p.accuracy,
+        p.work_site_name
 
       FROM punches p
 
@@ -2342,7 +2730,11 @@ d.timeline.push(...shift.timeline);
     {
       type:'in',
       time:time.toISOString(),
-      automatic:false
+      automatic:false,
+      latitude:event.latitude,
+      longitude:event.longitude,
+      accuracy:event.accuracy,
+      work_site_name:event.work_site_name || ''
     }
   ]
 };
@@ -2357,7 +2749,11 @@ d.timeline.push(...shift.timeline);
 shift.timeline.push({
   type:event.type,
   time:time.toISOString(),
-  automatic:!!event.automatic
+  automatic:!!event.automatic,
+  latitude:event.latitude,
+  longitude:event.longitude,
+  accuracy:event.accuracy,
+  work_site_name:event.work_site_name || ''
 });
 
       shift.events++;

@@ -113,7 +113,16 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
     <option value="Serveur">Serveur</option>
     <option value="Cuisine">Cuisine</option>
     <option value="Barman">Barman</option>
+    <option value="Commercial">Commercial</option>
+    <option value="Ouvrier">Ouvrier</option>
     <option value="Autre">Autre</option>
+  </select>
+
+  <label for="mspunchmode">Mode de pointage</label>
+  <select id="mspunchmode">
+    <option value="onsite">🏢 Sur place — QR + GPS établissement</option>
+    <option value="mobile">🚗 Déplacement — GPS libre, sans QR</option>
+    <option value="construction">🏗️ Construction — chantier + trajets/km</option>
   </select>
 
   <button class="g" onclick="managerAddStaff()">
@@ -144,6 +153,13 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
   </button>
 
   <div id="mrep"></div>
+</div>
+
+<div class="card">
+  <h3>🚗 Trajets / kilomètres</h3>
+  <input id="mtravelmonth" type="month">
+  <button onclick="managerTravelReport()">Afficher les trajets</button>
+  <div id="mtravel" style="margin-top:12px"></div>
 </div>
 </div>
 
@@ -193,6 +209,16 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
     <label for="estCountry">Pays *</label>
     <input id="estCountry" value="Belgique" placeholder="Belgique">
 
+    <label for="estMileageRate">Tarif kilométrique (€/km)</label>
+    <input id="estMileageRate" type="number" min="0" max="10" step="0.001" value="0" placeholder="0,000">
+
+    <label for="estTravelMeasurement">Contrôle des kilomètres</label>
+    <select id="estTravelMeasurement">
+      <option value="both">Compteur + photo + GPS</option>
+      <option value="odometer">Compteur + photo</option>
+      <option value="gps">GPS</option>
+    </select>
+
     <div id="estGpsInputs">
       <p style="color:#475569">Position GPS (facultative à la création)</p>
       <input id="estLatitude" type="number" step="any" placeholder="Latitude">
@@ -230,6 +256,14 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
     <option>Serveur</option>
     <option>Cuisine</option>
     <option>Responsable</option>
+    <option>Commercial</option>
+    <option>Ouvrier</option>
+  </select>
+
+  <select id="spunchmode">
+    <option value="onsite">🏢 Sur place</option>
+    <option value="mobile">🚗 Déplacement</option>
+    <option value="construction">🏗️ Construction</option>
   </select>
 
   <button onclick="addStaff()">Ajouter</button>
@@ -279,6 +313,10 @@ function mode(x){
   document.getElementById('e').classList.toggle('hide',x!=='e');
   document.getElementById('m').classList.toggle('hide',x!=='m');
   document.getElementById('a').classList.toggle('hide',x!=='a');
+}
+
+function punchModeLabel(v){
+  return v==='mobile' ? '🚗 Déplacement' : v==='construction' ? '🏗️ Construction' : '🏢 Sur place';
 }
   async function managerEnter(){
   try{
@@ -453,6 +491,7 @@ function managerPrintQR(){
   const code=document.getElementById('mscode').value.trim();
   const pin=document.getElementById('mspin').value;
   const role=document.getElementById('msrole').value;
+  const punch_mode=document.getElementById('mspunchmode').value;
 
   if(!name || !code || pin.length<4){
     alert('Nom, code et PIN minimum 4 caractères obligatoires.');
@@ -470,7 +509,8 @@ function managerPrintQR(){
         name,
         code,
         pin,
-        role
+        role,
+        punch_mode
       })
     });
 
@@ -511,7 +551,7 @@ async function managerLoadStaff(){
     box.innerHTML=list.map(v=>`
       <div class="item">
         <b>${esc(v.name)}</b> — ${esc(v.role)}<br>
-        Code : ${esc(v.code)}<br><br>
+        Code : ${esc(v.code)}<br>Mode : <b>${punchModeLabel(v.punch_mode)}</b><br><br>
 
         <button class="x"
           onclick='managerEditStaff(${JSON.stringify(v)})'>
@@ -627,6 +667,16 @@ async function managerEditStaff(v){
   const role=prompt('Rôle :',v.role);
   if(role===null) return;
 
+  const punch_mode=prompt(
+    'Mode de pointage : onsite / mobile / construction',
+    v.punch_mode || 'onsite'
+  );
+  if(punch_mode===null) return;
+  if(!['onsite','mobile','construction'].includes(punch_mode.trim().toLowerCase())){
+    alert('Mode invalide. Utilisez onsite, mobile ou construction.');
+    return;
+  }
+
   const pin=prompt(
     "Nouveau PIN (laisser vide pour garder l'ancien) :"
   );
@@ -644,6 +694,7 @@ async function managerEditStaff(v){
         name,
         code,
         role,
+        punch_mode:punch_mode.trim().toLowerCase(),
         pin
       })
     });
@@ -687,7 +738,83 @@ async function managerDeleteStaff(id){
 }
   
 
-  function formatMinutes(minutes){
+  
+function webTripTypeLabel(type){
+  return type==='depot_to_site' ? 'Dépôt → chantier' :
+         type==='site_to_site' ? 'Chantier → chantier' :
+         type==='site_to_depot' ? 'Chantier → dépôt' : type;
+}
+
+async function managerTravelReport(){
+  const month=(document.getElementById('mtravelmonth').value || new Date().toISOString().slice(0,7));
+  const box=document.getElementById('mtravel');
+  box.innerHTML='Chargement...';
+  try{
+    const list=await api('/api/manager/travel?month='+encodeURIComponent(month),{
+      headers:{'Authorization':'Bearer '+managerToken}
+    });
+    if(!list.length){box.innerHTML='<p>Aucun trajet.</p>';return;}
+    box.innerHTML=list.map(t=>{
+      const status=t.status==='approved'?'✅ Validé':t.status==='pending'?'⏳ À valider':t.status==='rejected'?'❌ Refusé':'En cours';
+      return `<div class="item">
+        <b>${esc(t.name)}</b> — ${webTripTypeLabel(t.trip_type)}<br>
+        ${new Date(t.start_time).toLocaleString('fr-BE')}<br>
+        Compteur : <b>${Number(t.odometer_km||0).toFixed(1)} km</b><br>
+        GPS : <b>${Number(t.gps_km||0).toFixed(2)} km</b><br>
+        Écart compteur/GPS : <b>${Math.abs(Number(t.odometer_km||0)-Number(t.gps_km||0)).toFixed(2)} km</b><br>
+        Tarif : ${Number(t.mileage_rate||0).toFixed(3)} €/km<br>
+        Statut : <b>${status}</b><br>
+        Montant : <b>${Number(t.amount_eur||0).toFixed(2)} €</b><br><br>
+        <button class="x" onclick="managerTravelPhoto('${t.id}','start')">📷 Départ</button>
+        <button class="x" onclick="managerTravelPhoto('${t.id}','end')">📷 Arrivée</button>
+        ${t.status==='pending'?`<button class="g" onclick="managerTravelApprove('${t.id}',${Number(t.odometer_km||0)})">✅ Valider</button>
+        <button class="r" onclick="managerTravelReject('${t.id}')">Refuser</button>`:''}
+      </div>`;
+    }).join('');
+  }catch(e){
+    console.error(e);
+    box.innerHTML='<div class="err">Impossible de charger les trajets.</div>';
+  }
+}
+
+async function managerTravelApprove(id,km){
+  const v=prompt('Kilomètres à valider :',Number(km||0).toFixed(1));
+  if(v===null)return;
+  const approved=Number(String(v).replace(',','.'));
+  if(!Number.isFinite(approved)||approved<0){alert('Kilométrage invalide.');return;}
+  try{
+    await api('/api/manager/travel/'+id+'/approve',{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+managerToken},
+      body:JSON.stringify({approved_km:approved})
+    });
+    await managerTravelReport();
+  }catch(e){alert('Validation impossible.');}
+}
+
+async function managerTravelReject(id){
+  if(!confirm('Refuser ce trajet ?'))return;
+  try{
+    await api('/api/manager/travel/'+id+'/reject',{
+      method:'PATCH',headers:{'Authorization':'Bearer '+managerToken}
+    });
+    await managerTravelReport();
+  }catch(e){alert('Refus impossible.');}
+}
+
+async function managerTravelPhoto(id,which){
+  try{
+    const r=await fetch('/api/manager/travel/'+id+'/photo/'+which,{
+      headers:{'Authorization':'Bearer '+managerToken}
+    });
+    if(!r.ok) throw new Error('photo');
+    const url=URL.createObjectURL(await r.blob());
+    window.open(url,'_blank');
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+  }catch(e){alert('Photo indisponible.');}
+}
+
+function formatMinutes(minutes){
   const m=Math.max(0,Number(minutes)||0);
   const h=Math.floor(m/60);
   const min=Math.round(m%60);
@@ -960,6 +1087,8 @@ function showEstablishmentForm(){
     document.getElementById(id).value='';
   }
   document.getElementById('estCountry').value='Belgique';
+  document.getElementById('estMileageRate').value='0';
+  document.getElementById('estTravelMeasurement').value='both';
   document.getElementById('estRadius').value='30';
   document.getElementById('establishmentForm').classList.remove('hide');
 }
@@ -985,6 +1114,8 @@ function editEstablishment(id){
   document.getElementById('estPostalCode').value=e.postal_code||'';
   document.getElementById('estCity').value=e.city||'';
   document.getElementById('estCountry').value=e.country||'Belgique';
+  document.getElementById('estMileageRate').value=Number(e.mileage_rate||0);
+  document.getElementById('estTravelMeasurement').value=e.travel_measurement||'both';
   document.getElementById('estGpsInputs').classList.add('hide');
   const box=document.getElementById('establishmentForm');
   box.classList.remove('hide');
@@ -1003,6 +1134,8 @@ async function saveEstablishment(){
   const postal_code=document.getElementById('estPostalCode').value.trim();
   const city=document.getElementById('estCity').value.trim();
   const country=document.getElementById('estCountry').value.trim();
+  const mileage_rate=Number(document.getElementById('estMileageRate').value||0);
+  const travel_measurement=document.getElementById('estTravelMeasurement').value;
 
   if(!name || !street_address || !postal_code || !city || !country){
     alert('Indiquez le nom et l’adresse complète : rue, code postal, ville et pays.');
@@ -1013,8 +1146,13 @@ async function saveEstablishment(){
     return;
   }
 
+  if(!Number.isFinite(mileage_rate) || mileage_rate<0 || mileage_rate>10){
+    alert('Le tarif kilométrique doit être compris entre 0 et 10 €/km.');
+    return;
+  }
+
   const editing=!!editingEstablishmentId;
-  const payload={name,vat_number,street_address,postal_code,city,country};
+  const payload={name,vat_number,street_address,postal_code,city,country,mileage_rate,travel_measurement};
   if(!editing){
     payload.latitude=document.getElementById('estLatitude').value;
     payload.longitude=document.getElementById('estLongitude').value;
@@ -1113,6 +1251,7 @@ if(reportSelect){
         <h3>🏢 ${esc(e.name)}</h3>
         <div>🧾 TVA : <b>${e.vat_number ? esc(e.vat_number) : 'Non renseignée'}</b></div>
         <div>📍 ${e.address ? esc(e.address) : 'Adresse non définie'}</div>
+        <div>🚗 Tarif km : <b>${Number(e.mileage_rate||0).toFixed(3)} €/km</b> — contrôle : ${esc(e.travel_measurement||'both')}</div>
         <div>Rayon : <b>${Number(e.radius_m)} m</b></div>
 
 <div>
@@ -1419,6 +1558,7 @@ async function addStaff(){
         code:scode.value,
         pin:spin.value,
         role:srole.value,
+        punch_mode:spunchmode.value,
         establishment_id:sestablishment.value
       })
     });
@@ -1450,7 +1590,7 @@ async function loadStaff(){
   staff.innerHTML=x.map(v=>`
     <div class="item">
       <b>${v.name}</b> — ${v.role}<br>
-      Code ${v.code}<br><br>
+      Code ${v.code}<br>Mode : <b>${punchModeLabel(v.punch_mode)}</b><br><br>
 
       <button class="x" onclick='editStaff(${JSON.stringify(v)})'>
         ✏️ Modifier / PIN
@@ -1556,6 +1696,17 @@ async function reactivateStaff(id){
   let role=prompt("Rôle :",v.role);
   if(role===null)return;
 
+  let punch_mode=prompt(
+    'Mode de pointage : onsite / mobile / construction',
+    v.punch_mode || 'onsite'
+  );
+  if(punch_mode===null)return;
+  punch_mode=punch_mode.trim().toLowerCase();
+  if(!['onsite','mobile','construction'].includes(punch_mode)){
+    alert('Mode invalide.');
+    return;
+  }
+
   let pin=prompt("Nouveau PIN (laisser vide pour garder l'ancien) :");
   if(pin===null)return;
 
@@ -1566,7 +1717,7 @@ async function reactivateStaff(id){
         'Content-Type':'application/json',
         'x-admin-pin':admin
       },
-      body:JSON.stringify({name,code,role,pin})
+      body:JSON.stringify({name,code,role,punch_mode,pin})
     });
 
     await loadStaff();
