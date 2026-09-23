@@ -167,25 +167,43 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
   <button onclick="showEstablishmentForm()">+ Ajouter un établissement</button>
 
   <div id="establishmentForm" class="hide" style="margin-top:15px">
-    <h3>Nouvel établissement</h3>
+    <h3 id="estFormTitle">Nouvel établissement</h3>
+    <p id="estFormNotice" style="color:#475569"></p>
 
+    <label for="estName">Nom de l'établissement *</label>
     <input id="estName" placeholder="Nom de l'établissement">
 
-    <input id="estAddress" placeholder="Adresse">
+    <label for="estVat">Numéro de TVA (si applicable)</label>
+    <input id="estVat" placeholder="BE 0XXX.XXX.XXX" autocomplete="off">
 
-    <input id="estLatitude" type="number" step="any" placeholder="Latitude">
+    <label for="estStreet">Rue et numéro *</label>
+    <input id="estStreet" placeholder="Rue et numéro">
 
-    <input id="estLongitude" type="number" step="any" placeholder="Longitude">
+    <div class="grid">
+      <div>
+        <label for="estPostalCode">Code postal *</label>
+        <input id="estPostalCode" placeholder="4000">
+      </div>
+      <div>
+        <label for="estCity">Commune / ville *</label>
+        <input id="estCity" placeholder="Liège">
+      </div>
+    </div>
 
-    <input id="estRadius" type="number" value="30" placeholder="Rayon autorisé en mètres">
+    <label for="estCountry">Pays *</label>
+    <input id="estCountry" value="Belgique" placeholder="Belgique">
 
-    <button class="g" onclick="createEstablishment()">
+    <div id="estGpsInputs">
+      <p style="color:#475569">Position GPS (facultative à la création)</p>
+      <input id="estLatitude" type="number" step="any" placeholder="Latitude">
+      <input id="estLongitude" type="number" step="any" placeholder="Longitude">
+      <input id="estRadius" type="number" value="30" placeholder="Rayon autorisé en mètres">
+    </div>
+
+    <button id="estSubmitButton" class="g" onclick="saveEstablishment()">
       Créer l'établissement
     </button>
-
-    <button class="x" onclick="hideEstablishmentForm()">
-      Annuler
-    </button>
+    <button class="x" onclick="hideEstablishmentForm()">Annuler</button>
   </div>
 
   <div id="establishmentsList" style="margin-top:15px"></div>
@@ -928,56 +946,102 @@ history();
 report();
   }catch(e){alert('PIN patron incorrect')}
 }
+let editingEstablishmentId=null;
+let establishmentsCache=[];
+
 function showEstablishmentForm(){
+  editingEstablishmentId=null;
+  document.getElementById('estFormTitle').textContent='Nouvel établissement';
+  document.getElementById('estFormNotice').textContent='';
+  document.getElementById('estSubmitButton').textContent="Créer l'établissement";
+  document.getElementById('estGpsInputs').classList.remove('hide');
+  for(const id of ['estName','estVat','estStreet','estPostalCode','estCity',
+                   'estLatitude','estLongitude']){
+    document.getElementById(id).value='';
+  }
+  document.getElementById('estCountry').value='Belgique';
+  document.getElementById('estRadius').value='30';
   document.getElementById('establishmentForm').classList.remove('hide');
 }
 
 function hideEstablishmentForm(){
+  editingEstablishmentId=null;
   document.getElementById('establishmentForm').classList.add('hide');
 }
 
-async function createEstablishment(){
-  const name=document.getElementById('estName').value.trim();
-  const address=document.getElementById('estAddress').value.trim();
-  const latitude=document.getElementById('estLatitude').value;
-  const longitude=document.getElementById('estLongitude').value;
-  const radius_m=document.getElementById('estRadius').value || 30;
+function editEstablishment(id){
+  const e=establishmentsCache.find(item=>item.id===id);
+  if(!e){alert("Établissement introuvable. Actualisez la page.");return;}
 
-  if(!name){
-    alert("Indiquez le nom de l'établissement");
+  editingEstablishmentId=id;
+  document.getElementById('estFormTitle').textContent="Modifier l'établissement";
+  document.getElementById('estFormNotice').textContent=
+    'Vérifiez les champs de votre ancienne adresse. Pour modifier le GPS, utilisez le bouton « Définir la position GPS ».';
+  document.getElementById('estSubmitButton').textContent='Enregistrer les modifications';
+  document.getElementById('estName').value=e.name||'';
+  document.getElementById('estVat').value=e.vat_number||'';
+  // L'ancien champ « address » était libre : son découpage doit être vérifié.
+  document.getElementById('estStreet').value=e.street_address||e.address||'';
+  document.getElementById('estPostalCode').value=e.postal_code||'';
+  document.getElementById('estCity').value=e.city||'';
+  document.getElementById('estCountry').value=e.country||'Belgique';
+  document.getElementById('estGpsInputs').classList.add('hide');
+  const box=document.getElementById('establishmentForm');
+  box.classList.remove('hide');
+  box.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function normalizeEstablishmentVat(value){
+  const compact=String(value||'').trim().toUpperCase().replace(/[\s.\-]/g,'');
+  return /^\d{10}$/.test(compact) ? 'BE'+compact : compact;
+}
+
+async function saveEstablishment(){
+  const name=document.getElementById('estName').value.trim();
+  const vat_number=normalizeEstablishmentVat(document.getElementById('estVat').value);
+  const street_address=document.getElementById('estStreet').value.trim();
+  const postal_code=document.getElementById('estPostalCode').value.trim();
+  const city=document.getElementById('estCity').value.trim();
+  const country=document.getElementById('estCountry').value.trim();
+
+  if(!name || !street_address || !postal_code || !city || !country){
+    alert('Indiquez le nom et l’adresse complète : rue, code postal, ville et pays.');
+    return;
+  }
+  if(vat_number && !/^BE\d{10}$/.test(vat_number)){
+    alert('Numéro de TVA : utilisez BE suivi de 10 chiffres.');
     return;
   }
 
+  const editing=!!editingEstablishmentId;
+  const payload={name,vat_number,street_address,postal_code,city,country};
+  if(!editing){
+    payload.latitude=document.getElementById('estLatitude').value;
+    payload.longitude=document.getElementById('estLongitude').value;
+    payload.radius_m=document.getElementById('estRadius').value||30;
+  }
+
   try{
-    await api('/api/admin/establishments',{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-admin-pin':admin
-      },
-      body:JSON.stringify({
-        name,
-        address,
-        latitude,
-        longitude,
-        radius_m
-      })
-    });
-
-    document.getElementById('estName').value='';
-    document.getElementById('estAddress').value='';
-    document.getElementById('estLatitude').value='';
-    document.getElementById('estLongitude').value='';
-    document.getElementById('estRadius').value='30';
-
+    await api(
+      editing
+        ? '/api/admin/establishments/'+editingEstablishmentId+'/details'
+        : '/api/admin/establishments',
+      {
+        method:editing?'PATCH':'POST',
+        headers:{'Content-Type':'application/json','x-admin-pin':admin},
+        body:JSON.stringify(payload)
+      }
+    );
     hideEstablishmentForm();
     await loadEstablishments();
-
-    alert('Établissement créé');
-
+    alert(editing?'Établissement modifié':'Établissement créé');
   }catch(e){
     console.error(e);
-    alert("Impossible de créer l'établissement");
+    const error=String(e.error||'');
+    if(error==='BAD_VAT') alert('Numéro de TVA incorrect : BE suivi de 10 chiffres.');
+    else if(error==='ADDRESS_REQUIRED') alert('Complétez l’adresse entière.');
+    else if(error==='ESTABLISHMENT_NOT_FOUND') alert('Établissement introuvable.');
+    else alert("Impossible d'enregistrer l'établissement.");
   }
 }
 
@@ -987,6 +1051,7 @@ async function loadEstablishments(){
       headers:{'x-admin-pin':admin}
     });
 
+    establishmentsCache=list;
     const box=document.getElementById('establishmentsList');
 const select=document.getElementById('sestablishment');
 
@@ -1046,6 +1111,7 @@ if(reportSelect){
     box.innerHTML=list.map(e=>`
       <div class="item">
         <h3>🏢 ${esc(e.name)}</h3>
+        <div>🧾 TVA : <b>${e.vat_number ? esc(e.vat_number) : 'Non renseignée'}</b></div>
         <div>📍 ${e.address ? esc(e.address) : 'Adresse non définie'}</div>
         <div>Rayon : <b>${Number(e.radius_m)} m</b></div>
 
@@ -1059,6 +1125,10 @@ if(reportSelect){
 <div>🔐 ${Number(e.manager_count)} responsable(s)</div>
 
 <br>
+
+<button class="g" onclick="editEstablishment('${e.id}')">
+  ✏️ Modifier la fiche (TVA / adresse)
+</button>
 
 <button onclick="createManager('${e.id}','${encodeURIComponent(e.name)}')">
   👤 Créer un responsable

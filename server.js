@@ -106,6 +106,22 @@ async function init(){
       created_at timestamptz not null default now()
     );
 
+    -- Informations légales et adresse complète des établissements existants.
+    ALTER TABLE establishments
+    ADD COLUMN IF NOT EXISTS vat_number text;
+
+    ALTER TABLE establishments
+    ADD COLUMN IF NOT EXISTS street_address text;
+
+    ALTER TABLE establishments
+    ADD COLUMN IF NOT EXISTS postal_code text;
+
+    ALTER TABLE establishments
+    ADD COLUMN IF NOT EXISTS city text;
+
+    ALTER TABLE establishments
+    ADD COLUMN IF NOT EXISTS country text;
+
     CREATE TABLE IF NOT EXISTS managers(
       id uuid primary key,
       establishment_id uuid not null references establishments(id) on delete cascade,
@@ -253,49 +269,97 @@ app.get('/api/admin/establishments', auth, async(req,res)=>{
   res.json(q.rows);
 });
 
-app.post('/api/admin/establishments', auth, async(req,res)=>{
-  const name = String(req.body.name || '').trim();
-  const address = String(req.body.address || '').trim();
+// Format belge : le même numéro TVA peut être utilisé par plusieurs établissements.
+function normalizeVatNumber(value){
+  const compact=String(value||'').trim().toUpperCase().replace(/[\s.\-]/g,'');
+  return /^\d{10}$/.test(compact) ? 'BE'+compact : compact;
+}
 
-  const latitude =
-    req.body.latitude === '' || req.body.latitude == null
-      ? null
-      : Number(req.body.latitude);
+function readEstablishmentDetails(body){
+  const name=String(body.name||'').trim();
+  const vatNumber=normalizeVatNumber(body.vat_number);
+  const street=String(body.street_address||'').trim();
+  const postalCode=String(body.postal_code||'').trim();
+  const city=String(body.city||'').trim();
+  const country=String(body.country||'').trim();
+  // On conserve « address » pour les anciens écrans et anciens établissements.
+  const fullAddress=[
+    street,
+    [postalCode,city].filter(Boolean).join(' '),
+    country
+  ].filter(Boolean).join(', ') || String(body.address||'').trim();
+  return {name,vatNumber,street,postalCode,city,country,fullAddress};
+}
 
-  const longitude =
-    req.body.longitude === '' || req.body.longitude == null
-      ? null
-      : Number(req.body.longitude);
+app.post('/api/admin/establishments',auth,async(req,res)=>{
+  const d=readEstablishmentDetails(req.body);
 
-  const radius = Number(req.body.radius_m || 30);
-
-  if(!name){
-    return res.status(400).json({error:'NAME_REQUIRED'});
+  if(!d.name) return res.status(400).json({error:'NAME_REQUIRED'});
+  if(d.vatNumber && !/^BE\d{10}$/.test(d.vatNumber)){
+    return res.status(400).json({error:'BAD_VAT'});
   }
 
-  if(latitude !== null && !Number.isFinite(latitude)){
+  const latitude=req.body.latitude==='' || req.body.latitude==null
+    ? null : Number(req.body.latitude);
+  const longitude=req.body.longitude==='' || req.body.longitude==null
+    ? null : Number(req.body.longitude);
+  const radius=Number(req.body.radius_m||30);
+
+  if(latitude!==null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90)){
     return res.status(400).json({error:'BAD_LATITUDE'});
   }
-
-  if(longitude !== null && !Number.isFinite(longitude)){
+  if(longitude!==null && (!Number.isFinite(longitude) || longitude < -180 || longitude > 180)){
     return res.status(400).json({error:'BAD_LONGITUDE'});
   }
-
-  if(!Number.isFinite(radius) || radius < 20 || radius > 2000){
+  if(!Number.isFinite(radius) || radius<20 || radius>2000){
     return res.status(400).json({error:'BAD_RADIUS'});
   }
 
-  const id = crypto.randomUUID();
-
-  const q = await pool.query(`
+  const q=await pool.query(`
     INSERT INTO establishments
-      (id,name,address,latitude,longitude,radius_m)
-    VALUES($1,$2,$3,$4,$5,$6)
+      (id,name,address,vat_number,street_address,postal_code,city,country,
+       latitude,longitude,radius_m)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     RETURNING *
-  `,[id,name,address,latitude,longitude,radius]);
+  `,[
+    crypto.randomUUID(),d.name,d.fullAddress,d.vatNumber||null,
+    d.street||null,d.postalCode||null,d.city||null,d.country||null,
+    latitude,longitude,radius
+  ]);
 
   res.json(q.rows[0]);
 });
+
+// Le patron peut compléter les établissements créés avant ces nouveaux champs.
+// Les coordonnées GPS et les horaires de pointage ne sont jamais modifiés ici.
+app.patch('/api/admin/establishments/:id/details',auth,async(req,res)=>{
+  const d=readEstablishmentDetails(req.body);
+
+  if(!d.name) return res.status(400).json({error:'NAME_REQUIRED'});
+  if(d.vatNumber && !/^BE\d{10}$/.test(d.vatNumber)){
+    return res.status(400).json({error:'BAD_VAT'});
+  }
+  if(!d.street || !d.postalCode || !d.city || !d.country){
+    return res.status(400).json({error:'ADDRESS_REQUIRED'});
+  }
+
+  const q=await pool.query(`
+    UPDATE establishments
+    SET name=$1,address=$2,vat_number=$3,
+        street_address=$4,postal_code=$5,city=$6,country=$7
+    WHERE id=$8
+    RETURNING *
+  `,[
+    d.name,d.fullAddress,d.vatNumber||null,d.street,d.postalCode,
+    d.city,d.country,req.params.id
+  ]);
+
+  if(!q.rows[0]){
+    return res.status(404).json({error:'ESTABLISHMENT_NOT_FOUND'});
+  }
+  res.json({ok:true,establishment:q.rows[0]});
+});
+
 // ===== POSITION GPS ETABLISSEMENT =====
 
 app.patch('/api/admin/establishments/:id/location',auth,async(req,res)=>{
