@@ -2702,6 +2702,23 @@ establishment_name:
       continue;
     }
 
+    const now=new Date();
+    const plannedStartAt=new Date(schedule.planned_start_at);
+    const plannedEndAt=new Date(schedule.planned_end_at);
+
+    // Avant l'heure prévue : pas absent, pas en retard.
+    // Entre l'entrée et la sortie prévues : retard en cours.
+    // Après l'heure de sortie prévue sans aucun pointage : absent.
+    const absent=now>=plannedEndAt;
+
+    const lateMinutes=
+      !absent && now>=plannedStartAt
+        ? Math.max(
+            0,
+            Math.floor((now-plannedStartAt)/60000)
+          )
+        : 0;
+
     daily.push({
       staff_id:person.id,
       name:person.name,
@@ -2722,10 +2739,10 @@ establishment_name:
       scheduled:true,
       planned_start:schedule.planned_start,
       planned_end:schedule.planned_end,
-      late_minutes:null,
-      overtime_minutes:null,
-      early_leave_minutes:null,
-      absent:true
+      late_minutes:lateMinutes,
+      overtime_minutes:0,
+      early_leave_minutes:0,
+      absent:absent
     });
   }
 
