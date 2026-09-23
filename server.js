@@ -2069,10 +2069,9 @@ async function buildHoursReport(month,establishmentId=null){
   // sorties automatiques 11h / 50h / 23h30
  for(const s of staffRows){
 
-  if(!s.active){
-    continue;
-  }
-
+  // Important : on vérifie aussi les employés désactivés.
+  // Une ancienne entrée restée ouverte doit être clôturée même si
+  // l'employé a été désactivé depuis.
   try{
     await enforceAutomaticExit(s);
     }catch(e){
