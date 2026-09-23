@@ -132,6 +132,9 @@ ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 1;
     ADD COLUMN IF NOT EXISTS establishment_id uuid
     REFERENCES establishments(id) ON DELETE SET NULL;
 
+    ALTER TABLE staff
+    ADD COLUMN IF NOT EXISTS national_number text;
+
     CREATE TABLE IF NOT EXISTS punches(
       id uuid primary key,
       staff_id uuid not null references staff(id) on delete cascade,
@@ -177,6 +180,10 @@ ADD COLUMN IF NOT EXISTS auto_reason text;
     CREATE INDEX IF NOT EXISTS idx_staff_establishment
     ON staff(establishment_id);
 
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_national_number_unique
+    ON staff(national_number)
+    WHERE national_number IS NOT NULL;
+
     CREATE INDEX IF NOT EXISTS idx_punch_establishment
     ON punches(establishment_id,time);
 
@@ -190,6 +197,48 @@ ADD COLUMN IF NOT EXISTS auto_reason text;
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
 async function auth(req,res,next){let r=await settings();if(!r.admin_pin_hash)return res.status(428).json({error:'ADMIN_NOT_SETUP'});if(!r.admin_pin_salt || hp(req.headers['x-admin-pin']||'',r.admin_pin_salt)!==r.admin_pin_hash)return res.status(401).json({error:'BAD_ADMIN_PIN'});next()}
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
+
+
+// ===== NUMERO NATIONAL / NISS-BIS =====
+
+function normalizeNationalNumber(value){
+  return String(value||'').replace(/\D/g,'');
+}
+
+function validNationalNumber(value){
+  const digits=normalizeNationalNumber(value);
+  if(digits.length!==11) return false;
+
+  const base=digits.slice(0,9);
+  const check=Number(digits.slice(9));
+  const oldCheck=97-(Number(base)%97);
+  const newCheck=97-(Number('2'+base)%97);
+
+  return check===oldCheck || check===newCheck;
+}
+
+function formatNationalNumber(value){
+  const digits=normalizeNationalNumber(value);
+  if(digits.length!==11) return '';
+
+  return digits.slice(0,2)+'.'+
+    digits.slice(2,4)+'.'+
+    digits.slice(4,6)+'-'+
+    digits.slice(6,9)+'.'+
+    digits.slice(9,11);
+}
+
+function uniqueStaffError(res,e){
+  if(e.code!=='23505') return false;
+
+  const constraint=String(e.constraint||'');
+  if(constraint.includes('national_number')){
+    res.status(409).json({error:'NISS_EXISTS'});
+  }else{
+    res.status(409).json({error:'CODE_EXISTS'});
+  }
+  return true;
+}
 // ===== SUPER ADMIN : ETABLISSEMENTS =====
 
 app.get('/api/admin/establishments', auth, async(req,res)=>{
@@ -516,7 +565,7 @@ app.get('/api/manager/me',managerAuth,(req,res)=>{
 app.get('/api/manager/staff/inactive',managerAuth,async(req,res)=>{
 
   const q=await pool.query(`
-    SELECT id,name,code,role,active
+    SELECT id,name,code,role,active,national_number
     FROM staff
     WHERE establishment_id=$1
       AND active=false
@@ -535,7 +584,7 @@ app.patch('/api/manager/staff/:id/reactivate',managerAuth,async(req,res)=>{
     WHERE id=$1
       AND establishment_id=$2
       AND active=false
-    RETURNING id,name,code,role,active
+    RETURNING id,name,code,role,active,national_number
   `,[
     req.params.id,
     req.manager.establishment_id
@@ -604,7 +653,7 @@ app.patch('/api/admin/managers/:id/reset-pin',auth,async(req,res)=>{
 
 app.get('/api/manager/staff',managerAuth,async(req,res)=>{
   const q=await pool.query(`
-    SELECT id,name,code,role,active
+    SELECT id,name,code,role,active,national_number
     FROM staff
     WHERE establishment_id=$1
     AND active=true
@@ -619,9 +668,14 @@ app.post('/api/manager/staff',managerAuth,async(req,res)=>{
   const code=String(req.body.code||'').trim();
   const role=String(req.body.role||'Employé').trim();
   const pin=String(req.body.pin||'');
+  const nationalNumber=normalizeNationalNumber(req.body.national_number);
 
   if(!name || !code || pin.length<4){
     return res.status(400).json({error:'INVALID'});
+  }
+
+  if(nationalNumber && !validNationalNumber(nationalNumber)){
+    return res.status(400).json({error:'BAD_NISS'});
   }
 
   const p=mk(pin);
@@ -629,8 +683,8 @@ app.post('/api/manager/staff',managerAuth,async(req,res)=>{
   try{
     await pool.query(`
       INSERT INTO staff
-        (id,name,code,role,pin_salt,pin_hash,establishment_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7)
+        (id,name,code,role,pin_salt,pin_hash,establishment_id,national_number)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8)
     `,[
       crypto.randomUUID(),
       name,
@@ -638,14 +692,15 @@ app.post('/api/manager/staff',managerAuth,async(req,res)=>{
       role,
       p.salt,
       p.hash,
-      req.manager.establishment_id
+      req.manager.establishment_id,
+      nationalNumber || null
     ]);
 
     res.json({ok:true});
 
   }catch(e){
-    if(e.code==='23505'){
-      return res.status(409).json({error:'CODE_EXISTS'});
+    if(uniqueStaffError(res,e)){
+      return;
     }
 
     console.error(e);
@@ -659,9 +714,14 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
   const code=String(req.body.code||'').trim();
   const role=String(req.body.role||'Employé').trim();
   const pin=String(req.body.pin||'');
+  const nationalNumber=normalizeNationalNumber(req.body.national_number);
 
   if(!name || !code){
     return res.status(400).json({error:'INVALID'});
+  }
+
+  if(nationalNumber && !validNationalNumber(nationalNumber)){
+    return res.status(400).json({error:'BAD_NISS'});
   }
 
   try{
@@ -674,11 +734,11 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 
       const q=await pool.query(`
         UPDATE staff
-        SET name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5
-        WHERE id=$6 AND establishment_id=$7
+        SET name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5,national_number=$6
+        WHERE id=$7 AND establishment_id=$8
         RETURNING id
       `,[
-        name,code,role,p.salt,p.hash,
+        name,code,role,p.salt,p.hash,nationalNumber || null,
         id,req.manager.establishment_id
       ]);
 
@@ -690,11 +750,11 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
 
       const q=await pool.query(`
         UPDATE staff
-        SET name=$1,code=$2,role=$3
-        WHERE id=$4 AND establishment_id=$5
+        SET name=$1,code=$2,role=$3,national_number=$4
+        WHERE id=$5 AND establishment_id=$6
         RETURNING id
       `,[
-        name,code,role,
+        name,code,role,nationalNumber || null,
         id,req.manager.establishment_id
       ]);
 
@@ -706,8 +766,8 @@ app.patch('/api/manager/staff/:id',managerAuth,async(req,res)=>{
     res.json({ok:true});
 
   }catch(e){
-    if(e.code==='23505'){
-      return res.status(409).json({error:'CODE_EXISTS'});
+    if(uniqueStaffError(res,e)){
+      return;
     }
 
     console.error(e);
@@ -795,6 +855,7 @@ app.get('/api/manager/schedules',managerAuth,async(req,res)=>{
       ss.staff_id,
       s.name,
       s.code,
+      s.national_number,
       ss.work_date::text AS date,
       to_char(ss.planned_start,'HH24:MI') AS planned_start,
       to_char(ss.planned_end,'HH24:MI') AS planned_end
@@ -895,7 +956,7 @@ app.get('/api/qr',auth,(req,res)=>res.json({token:token(),expiresIn:60-(Math.flo
 app.get('/api/staff/inactive',auth,async(req,res)=>{
 
   const q=await pool.query(`
-    SELECT id,name,code,role,active
+    SELECT id,name,code,role,active,national_number
     FROM staff
     WHERE active=false
     ORDER BY name
@@ -912,7 +973,7 @@ app.patch('/api/staff/:id/reactivate',auth,async(req,res)=>{
     SET active=true
     WHERE id=$1
       AND active=false
-    RETURNING id,name,code,role,active
+    RETURNING id,name,code,role,active,national_number
   `,[req.params.id]);
 
   if(!q.rows[0]){
@@ -930,7 +991,7 @@ app.patch('/api/staff/:id/reactivate',auth,async(req,res)=>{
   res.json(
     (
       await pool.query(`
-        SELECT id,name,code,role,active
+        SELECT id,name,code,role,active,national_number
         FROM staff
         WHERE active=true
         ORDER BY name
@@ -944,6 +1005,7 @@ app.post('/api/staff',auth,async(req,res)=>{
   const code=String(req.body.code||'').trim();
   const role=String(req.body.role||'Employé').trim();
   const pin=String(req.body.pin||'');
+  const nationalNumber=normalizeNationalNumber(req.body.national_number);
   const establishmentId=
     String(req.body.establishment_id||'').trim();
 
@@ -951,6 +1013,10 @@ app.post('/api/staff',auth,async(req,res)=>{
     return res.status(400).json({
       error:'INVALID'
     });
+  }
+
+  if(nationalNumber && !validNationalNumber(nationalNumber)){
+    return res.status(400).json({error:'BAD_NISS'});
   }
 
   if(!establishmentId){
@@ -985,15 +1051,17 @@ app.post('/api/staff',auth,async(req,res)=>{
         role,
         pin_salt,
         pin_hash,
-        establishment_id
+        establishment_id,
+        national_number
       )
-      VALUES($1,$2,$3,$4,$5,$6,$7)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8)
       RETURNING
         id,
         name,
         code,
         role,
         establishment_id,
+        national_number,
         active
     `,[
       crypto.randomUUID(),
@@ -1002,7 +1070,8 @@ app.post('/api/staff',auth,async(req,res)=>{
       role,
       p.salt,
       p.hash,
-      establishmentId
+      establishmentId,
+      nationalNumber || null
     ]);
 
     res.json({
@@ -1012,10 +1081,8 @@ app.post('/api/staff',auth,async(req,res)=>{
 
   }catch(e){
 
-    if(e.code==='23505'){
-      return res.status(409).json({
-        error:'CODE_EXISTS'
-      });
+    if(uniqueStaffError(res,e)){
+      return;
     }
 
     console.error(e);
@@ -1031,26 +1098,34 @@ app.patch('/api/staff/:id',auth,async(req,res)=>{
   let code=String(req.body.code||'').trim();
   let role=String(req.body.role||'Employé').trim();
   let pin=String(req.body.pin||'');
+  let nationalNumber=normalizeNationalNumber(req.body.national_number);
 
   if(!name||!code) return res.status(400).json({error:'INVALID'});
+
+  if(nationalNumber && !validNationalNumber(nationalNumber)){
+    return res.status(400).json({error:'BAD_NISS'});
+  }
 
   try{
     if(pin){
       if(pin.length<4) return res.status(400).json({error:'PIN'});
       let p=mk(pin);
       await pool.query(
-        'update staff set name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5 where id=$6',
-        [name,code,role,p.salt,p.hash,id]
+        'update staff set name=$1,code=$2,role=$3,pin_salt=$4,pin_hash=$5,national_number=$6 where id=$7',
+        [name,code,role,p.salt,p.hash,nationalNumber || null,id]
       );
     }else{
       await pool.query(
-        'update staff set name=$1,code=$2,role=$3 where id=$4',
-        [name,code,role,id]
+        'update staff set name=$1,code=$2,role=$3,national_number=$4 where id=$5',
+        [name,code,role,nationalNumber || null,id]
       );
     }
     res.json({ok:true});
   }catch(e){
-    res.status(409).json({error:'CODE_EXISTS'});
+    if(uniqueStaffError(res,e)){
+      return;
+    }
+    res.status(500).json({error:'SERVER_ERROR'});
   }
 });
 
@@ -1949,6 +2024,7 @@ async function buildHoursReport(month,establishmentId=null){
     s.id,
     s.name,
     s.code,
+    s.national_number,
     s.establishment_id,
     s.active,
     e.name AS establishment_name
@@ -2321,6 +2397,7 @@ shift.timeline.push({
         staff_id:person.id,
         name:person.name,
         code:person.code,
+        national_number:formatNationalNumber(person.national_number),
 establishment_id:
   person.establishment_id,
 
@@ -2466,6 +2543,7 @@ timeline:d.timeline
         staff_id:d.staff_id,
         name:d.name,
         code:d.code,
+        national_number:d.national_number || '',
 establishment_id:
   d.establishment_id,
 
@@ -2517,6 +2595,7 @@ establishment_name:
   staff_id:person.id,
   name:person.name,
   code:person.code,
+  national_number:formatNationalNumber(person.national_number),
 
   establishment_id:
     person.establishment_id,
@@ -2587,6 +2666,7 @@ establishment_name:
       name:m.name,
 
       code:m.code,
+      national_number:m.national_number || '',
 
       hours:
         Number(
@@ -2626,6 +2706,7 @@ establishment_name:
       staff_id:person.id,
       name:person.name,
       code:person.code,
+      national_number:formatNationalNumber(person.national_number),
       establishment_id:person.establishment_id,
       establishment_name:person.establishment_name || 'Non attribué',
       date:schedule.date,
@@ -2780,6 +2861,7 @@ app.get('/api/export.csv',auth,async(req,res)=>{
         SELECT
           s.name,
           s.code,
+          s.national_number,
           s.active,
           e.name AS establishment_name,
           p.type,
@@ -2893,6 +2975,7 @@ app.get('/api/export.csv',auth,async(req,res)=>{
       [
         'Établissement',
         'Employé',
+        'NISS / numéro national',
         'Code',
         'Action',
         'Date/heure',
@@ -2912,6 +2995,8 @@ app.get('/api/export.csv',auth,async(req,res)=>{
             'Non attribué',
 
           r.name,
+
+          formatNationalNumber(r.national_number) || 'À compléter',
 
           r.code,
 
@@ -2961,6 +3046,7 @@ app.get('/api/export.csv',auth,async(req,res)=>{
     lines.push(
       [
         'Employé',
+        'NISS / numéro national',
         'Établissement',
         'Code',
         'Heures nettes',
@@ -2981,6 +3067,8 @@ app.get('/api/export.csv',auth,async(req,res)=>{
       lines.push(
         [
           e.name,
+
+          e.national_number || 'À compléter',
 
           e.establishment_name ||
             'Non attribué',
