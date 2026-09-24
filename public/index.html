@@ -343,9 +343,16 @@ function punchModeLabel(v){
       'Bonjour '+j.manager.name;
 await managerLoadStaff();
 await managerLoadInactiveStaff();
- }catch(e){
+ } catch(e) {
   console.error(e);
-  alert('Identifiant ou PIN responsable incorrect');
+
+  const message = String(e?.message || e || '');
+
+  if (message.includes('TOO_MANY_LOGIN_ATTEMPTS')) {
+    alert('Trop de tentatives.\nConnexion bloquée pendant 15 minutes.');
+  } else {
+    alert('Identifiant ou PIN responsable incorrect');
+  }
 }
 }
 
