@@ -346,10 +346,18 @@ await managerLoadInactiveStaff();
  } catch(e) {
   console.error(e);
 
-  const message = String(e?.message || e || '');
+  const errorCode = e?.error || e?.message || String(e || '');
 
-  if (message.includes('TOO_MANY_LOGIN_ATTEMPTS')) {
-    alert('Trop de tentatives.\nConnexion bloquée pendant 15 minutes.');
+  if (errorCode === 'TOO_MANY_LOGIN_ATTEMPTS') {
+    const seconds = Number(e?.retry_after_seconds || 900);
+    const minutes = Math.ceil(seconds / 60);
+
+    alert(
+      'Trop de tentatives.\n' +
+      'Connexion temporairement bloquée.\n' +
+      'Réessayez dans environ ' + minutes + ' minute' +
+      (minutes > 1 ? 's.' : '.')
+    );
   } else {
     alert('Identifiant ou PIN responsable incorrect');
   }
