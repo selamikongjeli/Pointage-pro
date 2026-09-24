@@ -2,6 +2,7 @@
 const express=require('express'),crypto=require('crypto'),path=require('path'),cors=require('cors');
 const {Pool}=require('pg');
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.POINTAGE_SECRET;
 
@@ -678,14 +679,38 @@ async function managerAuth(req,res,next){
   req.manager=q.rows[0];
   next();
 }
+// ===== PROTECTION LOGIN RESPONSABLE =====
+const managerLoginAttempts = new Map();
 
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_BLOCK_TIME = 15 * 60 * 1000; // 15 minutes
+
+function getManagerLoginKey(req, username) {
+  return `${req.ip}:${username}`;
+}
 app.post('/api/manager/login',async(req,res)=>{
   const username=String(req.body.username||'')
     .trim()
     .toLowerCase();
 
   const pin=String(req.body.pin||'');
+const loginKey = getManagerLoginKey(req, username);
+const loginAttempt = managerLoginAttempts.get(loginKey);
 
+if (loginAttempt && loginAttempt.blockedUntil > Date.now()) {
+  const remainingSeconds = Math.ceil(
+    (loginAttempt.blockedUntil - Date.now()) / 1000
+  );
+
+  return res.status(429).json({
+    error: 'TOO_MANY_LOGIN_ATTEMPTS',
+    retry_after_seconds: remainingSeconds
+  });
+}
+
+if (loginAttempt && loginAttempt.blockedUntil <= Date.now()) {
+  managerLoginAttempts.delete(loginKey);
+}
   const q=await pool.query(`
     SELECT
       m.id,
@@ -708,12 +733,34 @@ app.post('/api/manager/login',async(req,res)=>{
 
   const m=q.rows[0];
 
-  if(!m || !ok(pin,m)){
-    return res.status(401).json({
-      error:'BAD_MANAGER_LOGIN'
+if (!m || !ok(pin,m)) {
+  const current = managerLoginAttempts.get(loginKey) || {
+    count: 0,
+    blockedUntil: 0
+  };
+
+  current.count += 1;
+
+  if (current.count >= MAX_LOGIN_ATTEMPTS) {
+    current.blockedUntil = Date.now() + LOGIN_BLOCK_TIME;
+    current.count = 0;
+
+    managerLoginAttempts.set(loginKey, current);
+
+    return res.status(429).json({
+      error: 'TOO_MANY_LOGIN_ATTEMPTS',
+      retry_after_seconds: Math.ceil(LOGIN_BLOCK_TIME / 1000)
     });
   }
 
+  managerLoginAttempts.set(loginKey, current);
+
+  return res.status(401).json({
+    error: 'BAD_MANAGER_LOGIN',
+    attempts_remaining: MAX_LOGIN_ATTEMPTS - current.count
+  });
+}
+managerLoginAttempts.delete(loginKey);
   res.json({
     ok:true,
     token:makeManagerToken(m),
