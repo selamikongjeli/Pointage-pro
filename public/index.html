@@ -178,6 +178,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <button onclick="adminEnter()">Connexion</button>
 </div>
 <div id="aa" class="hide"><div class="card">
+  <button class="x" onclick="adminLogout()">🚪 Déconnexion Super Admin</button>
   <h2>🏢 Mes établissements</h2>
 
   <button onclick="showEstablishmentForm()">+ Ajouter un établissement</button>
@@ -310,9 +311,14 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 let admin='',managerToken='',sp='',act='',sc=null,t=null;
 
 function mode(x){
+
   document.getElementById('e').classList.toggle('hide',x!=='e');
   document.getElementById('m').classList.toggle('hide',x!=='m');
   document.getElementById('a').classList.toggle('hide',x!=='a');
+
+  if(x==='a'){
+    adminLogout();
+  }
 }
 
 function punchModeLabel(v){
@@ -1074,6 +1080,35 @@ async function setupAdmin(){
     location.reload();
   }catch(e){alert('Erreur configuration')}
 }
+  async function setupAdmin(){
+  try{
+    await api('/api/setup',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        company:company.value,
+        pin:setupPin.value
+      })
+    });
+    location.reload();
+  }catch(e){
+    alert('Erreur configuration');
+  }
+}
+
+// ===== DÉCONNEXION SUPER ADMIN =====
+function adminLogout(){
+  admin='';
+
+  document.getElementById('apin').value='';
+
+  document.getElementById('aa').classList.add('hide');
+  document.getElementById('alogin').classList.remove('hide');
+
+  clearInterval(t);
+}
+
+async function adminEnter(){
 async function adminEnter(){
   try{
     await api('/api/staff',{headers:{'x-admin-pin':apin.value}});
