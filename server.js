@@ -1,7 +1,14 @@
 
 const express=require('express'),crypto=require('crypto'),path=require('path'),cors=require('cors');
 const {Pool}=require('pg');
-const app=express(),PORT=process.env.PORT||3000,SECRET=process.env.POINTAGE_SECRET||'change-me';
+const app = express();
+const PORT = process.env.PORT || 3000;
+const SECRET = process.env.POINTAGE_SECRET;
+
+if (!SECRET) {
+  console.error('POINTAGE_SECRET manquant');
+  process.exit(1);
+}
 const pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.NODE_ENV==='production'?{rejectUnauthorized:false}:false});
 app.use(cors({
   origin:[
