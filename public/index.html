@@ -1071,12 +1071,6 @@ if(managerMonth){
 }
 async function setupAdmin(){
   try{
-    await api('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company:company.value,pin:setupPin.value})});
-    location.reload();
-  }catch(e){alert('Erreur configuration')}
-}
-  async function setupAdmin(){
-  try{
     await api('/api/setup',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -1085,25 +1079,14 @@ async function setupAdmin(){
         pin:setupPin.value
       })
     });
+
     location.reload();
+
   }catch(e){
     alert('Erreur configuration');
   }
 }
 
-// ===== DÉCONNEXION SUPER ADMIN =====
-function adminLogout(){
-  admin='';
-
-  document.getElementById('apin').value='';
-
-  document.getElementById('aa').classList.add('hide');
-  document.getElementById('alogin').classList.remove('hide');
-
-  clearInterval(t);
-}
-
-async function adminEnter(){
 async function adminEnter(){
   try{
     await api('/api/staff',{headers:{'x-admin-pin':apin.value}});
