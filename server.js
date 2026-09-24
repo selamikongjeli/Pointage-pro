@@ -708,7 +708,11 @@ if (loginAttempt && loginAttempt.blockedUntil > Date.now()) {
   });
 }
 
-if (loginAttempt && loginAttempt.blockedUntil <= Date.now()) {
+if (
+  loginAttempt &&
+  loginAttempt.blockedUntil > 0 &&
+  loginAttempt.blockedUntil <= Date.now()
+) {
   managerLoginAttempts.delete(loginKey);
 }
   const q=await pool.query(`
