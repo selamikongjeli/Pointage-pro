@@ -686,7 +686,7 @@ const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_BLOCK_TIME = 15 * 60 * 1000; // 15 minutes
 
 function getManagerLoginKey(req, username) {
-  return `${req.ip}:${username}`;
+  return username;
 }
 app.post('/api/manager/login',async(req,res)=>{
   const username=String(req.body.username||'')
