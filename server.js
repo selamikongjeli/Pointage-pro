@@ -22,7 +22,6 @@ app.use(cors({
   allowedHeaders:[
     'Content-Type',
     'Authorization',
-    'x-admin-pin'
   ]
 }));
 
@@ -356,43 +355,21 @@ async function auth(req,res,next){
       ? authorization.slice(7)
       : '';
 
-  // Nouveau système sécurisé par token
-  if(bearerToken){
-
-    const data=readAdminToken(bearerToken);
-
-    if(!data){
-      return res.status(401).json({
-        error:'BAD_ADMIN_TOKEN'
-      });
-    }
-
-    req.admin=data;
-    return next();
-  }
-
-  // Ancien système conservé temporairement
-  // pour ne pas casser l'application pendant la migration.
-  const r=await settings();
-
-  if(!r.admin_pin_hash){
-    return res.status(428).json({
-      error:'ADMIN_NOT_SETUP'
-    });
-  }
-
-  const pin=
-    String(req.headers['x-admin-pin']||'');
-
-  if(
-    !r.admin_pin_salt ||
-    hp(pin,r.admin_pin_salt)!==r.admin_pin_hash
-  ){
+  if(!bearerToken){
     return res.status(401).json({
-      error:'BAD_ADMIN_PIN'
+      error:'ADMIN_AUTH_REQUIRED'
     });
   }
 
+  const data=readAdminToken(bearerToken);
+
+  if(!data){
+    return res.status(401).json({
+      error:'BAD_ADMIN_TOKEN'
+    });
+  }
+
+  req.admin=data;
   next();
 }
 // ===== CONNEXION SUPER ADMIN =====
