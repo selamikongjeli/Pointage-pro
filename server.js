@@ -452,53 +452,6 @@ app.post('/api/admin/login',async(req,res)=>{
 
     current.count+=1;
 
-    if(
-      current.count>=MAX_ADMIN_LOGIN_ATTEMPTS
-    ){
-      current.count=0;
-      current.blockedUntil=
-        Date.now()+ADMIN_LOGIN_BLOCK_TIME;
-
-      adminLoginAttempts.set(key,current);
-
-      return res.status(429).json({
-        error:'TOO_MANY_ADMIN_ATTEMPTS',
-        retry_after_seconds:
-          Math.ceil(ADMIN_LOGIN_BLOCK_TIME/1000)
-      });
-        }
-
-  if(
-    attempt &&
-    attempt.blockedUntil>0 &&
-    attempt.blockedUntil<=Date.now()
-  ){
-    adminLoginAttempts.delete(key);
-  }
-
-  const r=await settings();
-
-  if(!r.admin_pin_hash){
-    return res.status(428).json({
-      error:'ADMIN_NOT_SETUP'
-    });
-  }
-
-  const pin=String(req.body.pin||'');
-
-  if(
-    !r.admin_pin_salt ||
-    hp(pin,r.admin_pin_salt)!==r.admin_pin_hash
-  ){
-
-    const current=
-      adminLoginAttempts.get(key) || {
-        count:0,
-        blockedUntil:0
-      };
-
-    current.count+=1;
-
     if(current.count>=MAX_ADMIN_LOGIN_ATTEMPTS){
 
       current.count=0;
@@ -531,7 +484,7 @@ app.post('/api/admin/login',async(req,res)=>{
     expires_in:2*60*60
   });
 });
-    }
+
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
 
 function normalizePunchMode(value){
@@ -952,8 +905,7 @@ if (
   managerLoginAttempts.delete(loginKey);
 }
 
-  managerLoginAttempts.delete(loginKey);
-}
+ 
   const q=await pool.query(`
     SELECT
       m.id,
