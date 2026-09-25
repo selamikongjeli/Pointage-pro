@@ -294,7 +294,244 @@ ADD COLUMN IF NOT EXISTS work_site_name text;
   `);
 }
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
-async function auth(req,res,next){let r=await settings();if(!r.admin_pin_hash)return res.status(428).json({error:'ADMIN_NOT_SETUP'});if(!r.admin_pin_salt || hp(req.headers['x-admin-pin']||'',r.admin_pin_salt)!==r.admin_pin_hash)return res.status(401).json({error:'BAD_ADMIN_PIN'});next()}
+// ===== TOKEN SUPER ADMIN =====
+
+function makeAdminToken(){
+  const payload=Buffer.from(JSON.stringify({
+    role:'superadmin',
+    exp:Date.now()+(2*60*60*1000)
+  })).toString('base64url');
+
+  const signature=crypto
+    .createHmac('sha256',SECRET)
+    .update('admin:'+payload)
+    .digest('hex');
+
+  return payload+'.'+signature;
+}
+
+function readAdminToken(token){
+  try{
+    const parts=String(token||'').split('.');
+
+    if(parts.length!==2) return null;
+
+    const payload=parts[0];
+    const signature=parts[1];
+
+    const expected=crypto
+      .createHmac('sha256',SECRET)
+      .update('admin:'+payload)
+      .digest('hex');
+
+    const a=Buffer.from(signature);
+    const b=Buffer.from(expected);
+
+    if(a.length!==b.length) return null;
+
+    if(!crypto.timingSafeEqual(a,b)){
+      return null;
+    }
+
+    const data=JSON.parse(
+      Buffer.from(payload,'base64url').toString('utf8')
+    );
+
+    if(data.role!=='superadmin') return null;
+    if(!data.exp || Date.now()>data.exp) return null;
+
+    return data;
+
+  }catch(e){
+    return null;
+  }
+}
+async function auth(req,res,next){
+
+  const authorization=
+    String(req.headers.authorization||'');
+
+  const bearerToken=
+    authorization.startsWith('Bearer ')
+      ? authorization.slice(7)
+      : '';
+
+  // Nouveau système sécurisé par token
+  if(bearerToken){
+
+    const data=readAdminToken(bearerToken);
+
+    if(!data){
+      return res.status(401).json({
+        error:'BAD_ADMIN_TOKEN'
+      });
+    }
+
+    req.admin=data;
+    return next();
+  }
+
+  // Ancien système conservé temporairement
+  // pour ne pas casser l'application pendant la migration.
+  const r=await settings();
+
+  if(!r.admin_pin_hash){
+    return res.status(428).json({
+      error:'ADMIN_NOT_SETUP'
+    });
+  }
+
+  const pin=
+    String(req.headers['x-admin-pin']||'');
+
+  if(
+    !r.admin_pin_salt ||
+    hp(pin,r.admin_pin_salt)!==r.admin_pin_hash
+  ){
+    return res.status(401).json({
+      error:'BAD_ADMIN_PIN'
+    });
+  }
+
+  next();
+}
+// ===== CONNEXION SUPER ADMIN =====
+
+const adminLoginAttempts=new Map();
+
+const MAX_ADMIN_LOGIN_ATTEMPTS=5;
+const ADMIN_LOGIN_BLOCK_TIME=15*60*1000;
+
+app.post('/api/admin/login',async(req,res)=>{
+
+  const key='superadmin';
+  const attempt=adminLoginAttempts.get(key);
+
+  if(
+    attempt &&
+    attempt.blockedUntil>Date.now()
+  ){
+    const remainingSeconds=Math.ceil(
+      (attempt.blockedUntil-Date.now())/1000
+    );
+
+    return res.status(429).json({
+      error:'TOO_MANY_ADMIN_ATTEMPTS',
+      retry_after_seconds:remainingSeconds
+    });
+  }
+
+  if(
+    attempt &&
+    attempt.blockedUntil>0 &&
+    attempt.blockedUntil<=Date.now()
+  ){
+    adminLoginAttempts.delete(key);
+  }
+
+  const r=await settings();
+
+  if(!r.admin_pin_hash){
+    return res.status(428).json({
+      error:'ADMIN_NOT_SETUP'
+    });
+  }
+
+  const pin=String(req.body.pin||'');
+
+  if(
+    !r.admin_pin_salt ||
+    hp(pin,r.admin_pin_salt)!==r.admin_pin_hash
+  ){
+
+    const current=
+      adminLoginAttempts.get(key) || {
+        count:0,
+        blockedUntil:0
+      };
+
+    current.count+=1;
+
+    if(
+      current.count>=MAX_ADMIN_LOGIN_ATTEMPTS
+    ){
+      current.count=0;
+      current.blockedUntil=
+        Date.now()+ADMIN_LOGIN_BLOCK_TIME;
+
+      adminLoginAttempts.set(key,current);
+
+      return res.status(429).json({
+        error:'TOO_MANY_ADMIN_ATTEMPTS',
+        retry_after_seconds:
+          Math.ceil(ADMIN_LOGIN_BLOCK_TIME/1000)
+      });
+        }
+
+  if(
+    attempt &&
+    attempt.blockedUntil>0 &&
+    attempt.blockedUntil<=Date.now()
+  ){
+    adminLoginAttempts.delete(key);
+  }
+
+  const r=await settings();
+
+  if(!r.admin_pin_hash){
+    return res.status(428).json({
+      error:'ADMIN_NOT_SETUP'
+    });
+  }
+
+  const pin=String(req.body.pin||'');
+
+  if(
+    !r.admin_pin_salt ||
+    hp(pin,r.admin_pin_salt)!==r.admin_pin_hash
+  ){
+
+    const current=
+      adminLoginAttempts.get(key) || {
+        count:0,
+        blockedUntil:0
+      };
+
+    current.count+=1;
+
+    if(current.count>=MAX_ADMIN_LOGIN_ATTEMPTS){
+
+      current.count=0;
+      current.blockedUntil=
+        Date.now()+ADMIN_LOGIN_BLOCK_TIME;
+
+      adminLoginAttempts.set(key,current);
+
+      return res.status(429).json({
+        error:'TOO_MANY_ADMIN_ATTEMPTS',
+        retry_after_seconds:
+          Math.ceil(ADMIN_LOGIN_BLOCK_TIME/1000)
+      });
+    }
+
+    adminLoginAttempts.set(key,current);
+
+    return res.status(401).json({
+      error:'BAD_ADMIN_PIN',
+      attempts_remaining:
+        MAX_ADMIN_LOGIN_ATTEMPTS-current.count
+    });
+  }
+
+  adminLoginAttempts.delete(key);
+
+  res.json({
+    ok:true,
+    token:makeAdminToken(),
+    expires_in:2*60*60
+  });
+});
+    }
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
 
 function normalizePunchMode(value){
