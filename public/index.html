@@ -178,7 +178,11 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <button onclick="adminEnter()">Connexion</button>
 </div>
 <div id="aa" class="hide"><div class="card">
-  
+
+  <button class="x" onclick="adminLogout()">
+    🔒 Déconnexion Super Admin
+  </button>
+
   <h2>🏢 Mes établissements</h2>
 
   <button onclick="showEstablishmentForm()">+ Ajouter un établissement</button>
@@ -1134,6 +1138,47 @@ async function adminEnter(){
       alert('PIN patron incorrect');
     }
   }
+}
+  function adminLogout(){
+
+  admin='';
+
+  document.getElementById('apin').value='';
+
+  document.getElementById('aa').classList.add('hide');
+  document.getElementById('alogin').classList.remove('hide');
+
+  if(t){
+    clearInterval(t);
+    t=null;
+  }
+
+  const qrbox=document.getElementById('qrbox');
+  if(qrbox){
+    qrbox.innerHTML='';
+  }
+
+  const count=document.getElementById('count');
+  if(count){
+    count.textContent='--';
+  }
+
+  const ids=[
+    'establishmentsList',
+    'staff',
+    'inactiveStaff',
+    'rep',
+    'hist'
+  ];
+
+  ids.forEach(id=>{
+    const element=document.getElementById(id);
+    if(element){
+      element.innerHTML='';
+    }
+  });
+
+  establishmentsCache=[];
 }
 let establishmentsCache=[];
 
