@@ -101,7 +101,8 @@ async function init(){
     INSERT INTO settings(id)
     VALUES(1)
     ON CONFLICT(id) DO NOTHING;
-
+ALTER TABLE settings
+ADD COLUMN IF NOT EXISTS admin_session_version integer NOT NULL DEFAULT 1;
     CREATE TABLE IF NOT EXISTS establishments(
       id uuid primary key,
       name text not null,
@@ -295,9 +296,11 @@ ADD COLUMN IF NOT EXISTS work_site_name text;
 async function settings(){return (await pool.query('select * from settings where id=1')).rows[0]}
 // ===== TOKEN SUPER ADMIN =====
 
-function makeAdminToken(){
+function makeAdminToken(sessionVersion){
+
   const payload=Buffer.from(JSON.stringify({
     role:'superadmin',
+    sv:Number(sessionVersion||1),
     exp:Date.now()+(2*60*60*1000)
   })).toString('base64url');
 
@@ -366,6 +369,17 @@ async function auth(req,res,next){
   if(!data){
     return res.status(401).json({
       error:'BAD_ADMIN_TOKEN'
+    });
+  }
+
+  const r=await settings();
+
+  if(
+    Number(data.sv)!==
+    Number(r.admin_session_version)
+  ){
+    return res.status(401).json({
+      error:'ADMIN_SESSION_REVOKED'
     });
   }
 
@@ -457,11 +471,25 @@ app.post('/api/admin/login',async(req,res)=>{
 
   res.json({
     ok:true,
-    token:makeAdminToken(),
+    token:makeAdminToken(r.admin_session_version),
     expires_in:2*60*60
   });
 });
+// ===== DECONNEXION SUPER ADMIN =====
 
+app.post('/api/admin/logout',auth,async(req,res)=>{
+
+  await pool.query(`
+    UPDATE settings
+    SET admin_session_version=
+      admin_session_version+1
+    WHERE id=1
+  `);
+
+  res.json({
+    ok:true
+  });
+});
 async function staff(code){return (await pool.query('select * from staff where code=$1 and active=true',[code])).rows[0]}
 
 function normalizePunchMode(value){
