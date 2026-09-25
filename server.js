@@ -944,7 +944,13 @@ if (loginAttempt && loginAttempt.blockedUntil > Date.now()) {
     retry_after_seconds: remainingSeconds
   });
 }
-
+if (
+  loginAttempt &&
+  loginAttempt.blockedUntil > 0 &&
+  loginAttempt.blockedUntil <= Date.now()
+) {
+  managerLoginAttempts.delete(loginKey);
+}
 
   managerLoginAttempts.delete(loginKey);
 }
