@@ -1089,19 +1089,52 @@ async function setupAdmin(){
 
 async function adminEnter(){
   try{
-    await api('/api/staff',{headers:{'x-admin-pin':apin.value}});
-    admin=apin.value;
+
+    const j=await api('/api/admin/login',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json'
+      },
+      body:JSON.stringify({
+        pin:document.getElementById('apin').value
+      })
+    });
+
+    admin=j.token;
+
+    document.getElementById('apin').value='';
+
     alogin.classList.add('hide');
     aa.classList.remove('hide');
+
     await refreshQR();
     await loadEstablishments();
-loadStaff();
-loadInactiveStaff();
-history();
-report();
-  }catch(e){alert('PIN patron incorrect')}
+
+    loadStaff();
+    loadInactiveStaff();
+    history();
+    report();
+
+  }catch(e){
+
+    console.error(e);
+
+    if(e.error==='TOO_MANY_ADMIN_ATTEMPTS'){
+      const minutes=Math.ceil(
+        Number(e.retry_after_seconds||900)/60
+      );
+
+      alert(
+        'Trop de tentatives.\n\n'+
+        'Connexion Super Admin bloquée environ '+
+        minutes+
+        ' minute'+(minutes>1?'s':'')+'.'
+      );
+    }else{
+      alert('PIN patron incorrect');
+    }
+  }
 }
-let editingEstablishmentId=null;
 let establishmentsCache=[];
 
 function showEstablishmentForm(){
@@ -1194,7 +1227,7 @@ async function saveEstablishment(){
         : '/api/admin/establishments',
       {
         method:editing?'PATCH':'POST',
-        headers:{'Content-Type':'application/json','x-admin-pin':admin},
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+admin},
         body:JSON.stringify(payload)
       }
     );
@@ -1214,7 +1247,7 @@ async function saveEstablishment(){
 async function loadEstablishments(){
   try{
     const list=await api('/api/admin/establishments',{
-      headers:{'x-admin-pin':admin}
+      headers:{'Authorization':'Bearer '+admin}
     });
 
     establishmentsCache=list;
@@ -1341,7 +1374,7 @@ async function createManager(establishmentId,encodedName){
       method:'POST',
       headers:{
         'Content-Type':'application/json',
-        'x-admin-pin':admin
+        'Authorization':'Bearer '+admin
       },
       body:JSON.stringify({
         name:name.trim(),
@@ -1370,7 +1403,7 @@ async function resetManagerPin(establishmentId){
       '/api/admin/establishments/'+establishmentId+'/managers',
       {
         headers:{
-          'x-admin-pin':admin
+         'Authorization':'Bearer '+admin
         }
       }
     );
@@ -1429,7 +1462,7 @@ async function resetManagerPin(establishmentId){
         method:'PATCH',
         headers:{
           'Content-Type':'application/json',
-          'x-admin-pin':admin
+          'Authorization':'Bearer '+admin
         },
         body:JSON.stringify({pin})
       }
@@ -1497,7 +1530,7 @@ async function setEstablishmentLocation(establishmentId,currentRadius){
             method:'PATCH',
             headers:{
               'Content-Type':'application/json',
-              'x-admin-pin':admin
+             'Authorization':'Bearer '+admin
             },
             body:JSON.stringify({
               latitude,
@@ -1547,7 +1580,7 @@ async function setEstablishmentLocation(establishmentId,currentRadius){
   
 async function refreshQR(){
   try{
-    let j=await api('/api/qr',{headers:{'x-admin-pin':admin}});
+    let j=await api('/api/qr',{headers:{'Authorization':'Bearer '+admin}});
     if(!j.token) throw {error:'NO_TOKEN'};
     let box=document.getElementById('qrbox');
     box.innerHTML='';
@@ -1579,7 +1612,7 @@ async function addStaff(){
       method:'POST',
       headers:{
         'Content-Type':'application/json',
-        'x-admin-pin':admin
+        'Authorization':'Bearer '+admin
       },
       body:JSON.stringify({
         name:sname.value,
@@ -1613,7 +1646,7 @@ async function addStaff(){
   }
 }
 async function loadStaff(){
-  let x=await api('/api/staff',{headers:{'x-admin-pin':admin}});
+  let x=await api('/api/staff',{headers:{'Authorization':'Bearer '+admin}});
 
   staff.innerHTML=x.map(v=>`
     <div class="item">
@@ -1638,7 +1671,7 @@ async function loadStaff(){
       '/api/staff/inactive',
       {
         headers:{
-          'x-admin-pin':admin
+          'Authorization':'Bearer '+admin
         }
       }
     );
@@ -1698,7 +1731,7 @@ async function reactivateStaff(id){
       {
         method:'PATCH',
         headers:{
-          'x-admin-pin':admin
+          'Authorization':'Bearer '+admin
         }
       }
     );
@@ -1743,7 +1776,7 @@ async function reactivateStaff(id){
       method:'PATCH',
       headers:{
         'Content-Type':'application/json',
-        'x-admin-pin':admin
+        'Authorization':'Bearer '+admin
       },
       body:JSON.stringify({name,code,role,punch_mode,pin})
     });
@@ -1767,7 +1800,7 @@ async function deleteStaff(id){
   try{
     await api('/api/staff/'+id,{
       method:'DELETE',
-      headers:{'x-admin-pin':admin}
+      headers:{'Authorization':'Bearer '+admin}
     });
 
     await loadStaff();
@@ -1779,7 +1812,7 @@ async function deleteStaff(id){
   }
 }
 async function history(){
-  let x=await api('/api/history',{headers:{'x-admin-pin':admin}}),L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'};
+  let x=await api('/api/history',{headers:{'Authorization':'Bearer '+admin}}),L={in:'Entrée',pause_start:'Début pause',pause_end:'Fin pause',out:'Sortie'};
   hist.innerHTML=x.slice(0,100).map(v=>`<div class="item"><b>${esc(v.staff_name)}</b> — ${L[v.type]}<br>${new Date(v.time).toLocaleString('fr-BE')}</div>`).join('');
 }
 async function report(){
@@ -1812,7 +1845,7 @@ const j=await api(
   reportUrl,
   {
     headers:{
-      'x-admin-pin':admin
+      'Authorization':'Bearer '+admin
     }
   }
 );
@@ -2160,7 +2193,7 @@ async function csv(){
       url,
       {
         headers:{
-          'x-admin-pin':admin
+          'Authorization':'Bearer '+admin
         }
       }
     );
