@@ -1139,7 +1139,24 @@ async function adminEnter(){
     }
   }
 }
-  function adminLogout(){
+  async function adminLogout(){
+
+  const currentToken=admin;
+
+  try{
+
+    if(currentToken){
+      await api('/api/admin/logout',{
+        method:'POST',
+        headers:{
+          'Authorization':'Bearer '+currentToken
+        }
+      });
+    }
+
+  }catch(e){
+    console.error('Erreur déconnexion serveur',e);
+  }
 
   admin='';
 
@@ -1154,11 +1171,13 @@ async function adminEnter(){
   }
 
   const qrbox=document.getElementById('qrbox');
+
   if(qrbox){
     qrbox.innerHTML='';
   }
 
   const count=document.getElementById('count');
+
   if(count){
     count.textContent='--';
   }
@@ -1173,6 +1192,7 @@ async function adminEnter(){
 
   ids.forEach(id=>{
     const element=document.getElementById(id);
+
     if(element){
       element.innerHTML='';
     }
